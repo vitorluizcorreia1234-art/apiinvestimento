@@ -346,7 +346,7 @@ def save_game_config():
     data = request.json
     cfg = GameConfig.query.first()
     cfg.chance_black = float(data['c_black'])
-    cfg.chance_red = float(data['c_red'])
+    cfg.chance_red = float(data['c_red'])    
     cfg.chance_white = float(data['c_white'])
     cfg.mult_black = float(data['m_black'])
     cfg.mult_red = float(data['m_red'])
@@ -356,4 +356,5 @@ def save_game_config():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+
+    app.run(host='0.0.0.0', port=os.environ.get('PORT', 5000))
