@@ -356,5 +356,7 @@ def save_game_config():
 
 
 if __name__ == '__main__':
+    # O Render usa a porta da variável de ambiente PORT
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
 
-    app.run(host='0.0.0.0', port=os.environ.get('PORT', 5000))
