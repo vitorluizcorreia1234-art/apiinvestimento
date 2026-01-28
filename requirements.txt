@@ -5,3 +5,4 @@ psycopg2-binary
 mercadopago
 werkzeug
 email-validator
+gunicorn
