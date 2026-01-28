@@ -4,3 +4,4 @@ Flask-Cors
 psycopg2-binary
 mercadopago
 werkzeug
+email-validator
