@@ -6,3 +6,4 @@ mercadopago
 werkzeug
 email-validator
 gunicorn
+requests
