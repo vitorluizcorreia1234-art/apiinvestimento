@@ -105,6 +105,10 @@ class GameConfig(db.Model):
     mines_edge = db.Column(db.Float, default=30.0)
     aviator_max_mult = db.Column(db.Float, default=10.0)
     aviator_edge = db.Column(db.Float, default=10.0)
+    aviator_prob_low = db.Column(db.Float, default=60.0)  # Chance de ser < 1.50x
+    aviator_prob_med = db.Column(db.Float, default=25.0)  # Chance de 1.50x até 2.00x
+    aviator_prob_high = db.Column(db.Float, default=10.0) # Chance de 2.00x até 5.00x
+    force_crash_rounds = db.Column(db.Integer, default=0)
 
 class SystemStatus(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -440,19 +444,60 @@ def aviator_play():
     user.balance -= bet
     
     cfg = GameConfig.query.first()
-    # Lógica de Crash
-    if random.uniform(0, 100) < cfg.aviator_edge:
-        crash = 1.00
+    # --- NOVA LÓGICA DE CRASH ---
+    crash = 1.00
+    
+    # 1. Verifica se o Botão de Pânico foi ativado (Force Crash)
+    if cfg.force_crash_rounds > 0:
+        # Força queda entre 1.00x e 1.30x
+        crash = round(random.uniform(1.00, 1.30), 2)
+        cfg.force_crash_rounds -= 1 # Desconta uma rodada forçada
     else:
-        # Algoritmo de crash exponencial simples
-        x = random.uniform(1, 100)
-        mult = 0.99 / (1 - (x / 100))
-        # Limita ao max configurado
-        if mult > cfg.aviator_max_mult: mult = cfg.aviator_max_mult
-        crash = max(1.00, round(mult, 2))
+        # 2. Lógica baseada nas suas porcentagens
+        r = random.uniform(0, 100)
+        
+        limit_low = cfg.aviator_prob_low  # Ex: 60
+        limit_med = limit_low + cfg.aviator_prob_med # Ex: 60+25 = 85
+        limit_high = limit_med + cfg.aviator_prob_high # Ex: 85+10 = 95
+        
+        if r < limit_low:
+            # Faixa Baixa: 1.00x a 1.49x
+            crash = random.uniform(1.00, 1.49)
+        elif r < limit_med:
+            # Faixa Média: 1.50x a 1.99x
+            crash = random.uniform(1.50, 1.99)
+        elif r < limit_high:
+            # Faixa Alta: 2.00x a 4.99x
+            crash = random.uniform(2.00, 4.99)
+        else:
+            # Faixa Jackpot: 5.00x até o Teto Máximo
+            crash = random.uniform(5.00, cfg.aviator_max_mult)
+            
+        crash = round(crash, 2)
 
     db.session.commit()
     return jsonify({"success": True, "crash_point": crash, "new_balance": user.balance})
+
+# 1. Rota para ativar o Force Crash (Botão de Pânico)
+@app.route('/admin/force_crash', methods=['POST'])
+def force_crash():
+    cfg = GameConfig.query.first()
+    cfg.force_crash_rounds = 3 # Define 3 rodadas de queda forçada
+    db.session.commit()
+    return jsonify({"success": True})
+
+# 2. Rota para Excluir Usuário
+@app.route('/admin/delete_user/<int:id>', methods=['DELETE'])
+def delete_user(id):
+    # Remove dependências primeiro para não dar erro de chave estrangeira
+    Investment.query.filter_by(user_id=id).delete()
+    Deposit.query.filter_by(user_id=id).delete()
+    Withdrawal.query.filter_by(user_id=id).delete()
+    FinancialLog.query.filter_by(user_id=id).delete() # Se tiver relação user_id
+    
+    User.query.filter_by(id=id).delete()
+    db.session.commit()
+    return jsonify({"success": True})
 
 @app.route('/game/aviator/cashout', methods=['POST'])
 def aviator_cashout():
@@ -614,9 +659,13 @@ def save_game_config():
     if 'mines_edge' in data: cfg.mines_edge = float(data['mines_edge'])
     if 'aviator_edge' in data: cfg.aviator_edge = float(data['aviator_edge'])
     if 'aviator_max' in data: cfg.aviator_max_mult = float(data['aviator_max'])
+    if 'aviator_prob_low' in data: cfg.aviator_prob_low = float(data['aviator_prob_low'])
+    if 'aviator_prob_med' in data: cfg.aviator_prob_med = float(data['aviator_prob_med'])
+    if 'aviator_prob_high' in data: cfg.aviator_prob_high = float(data['aviator_prob_high'])
+    
     db.session.commit()
     return jsonify({"success": True})
-
+    
 @app.route('/admin/save_plan', methods=['POST'])
 def save_plan():
     data = request.json
@@ -656,4 +705,5 @@ def withdrawal_action():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
 
