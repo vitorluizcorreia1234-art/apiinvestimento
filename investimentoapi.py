@@ -279,7 +279,14 @@ def create_pix_deposit():
     
     user = User.query.get(user_id)
     if not user: return jsonify({"erro": True, "msg": "Usuário não encontrado"}), 404
-    if amount < 1: return jsonify({"erro": True, "msg": "Valor mínimo R$ 1.00"}), 400
+
+    # --- NOVAS REGRAS DE LIMITES ---
+    if amount < 30: 
+        return jsonify({"erro": True, "msg": "O depósito mínimo é de R$ 30,00"}), 400
+    
+    if amount > 3000: 
+        return jsonify({"erro": True, "msg": "O depósito máximo é de R$ 3.000,00 por vez"}), 400
+    # -------------------------------
 
     try:
         payment_data = {
@@ -291,7 +298,7 @@ def create_pix_deposit():
                 "first_name": user.username,
                 "identification": {
                     "type": "CPF",
-                    "number": user.cpf if user.cpf else "00000000000" # Fallback se não tiver CPF
+                    "number": user.cpf if user.cpf else "00000000000" # Fallback
                 }
             }
         }
@@ -300,7 +307,7 @@ def create_pix_deposit():
         payment = payment_response["response"]
 
         if payment["status"] == 400:
-             return jsonify({"erro": True, "msg": "Erro nos dados do pagamento (Verifique CPF/Email)"}), 400
+             return jsonify({"erro": True, "msg": "Erro nos dados (Verifique CPF/Email)"}), 400
 
         # Salvar depósito pendente no BD
         new_dep = Deposit(
@@ -649,3 +656,4 @@ def withdrawal_action():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
