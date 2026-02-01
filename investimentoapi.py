@@ -29,7 +29,7 @@ MP_ACCESS_TOKEN = os.environ.get("MP_TOKEN", "APP_USR-5404172795263183-120500-01
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 
 # PIN DO ADMIN (Troque por algo difícil)
-ADMIN_PIN = os.environ.get("ADMIN_PIN", "1234")
+ADMIN_PIN = os.environ.get("ADMIN_PIN", "Ravizinho@4000")
 
 # --- MODELOS ---
 class User(db.Model):
@@ -644,3 +644,4 @@ def force_crash():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
