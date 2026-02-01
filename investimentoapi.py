@@ -285,8 +285,8 @@ def create_pix_deposit():
     if not user: return jsonify({"erro": True, "msg": "Usuário não encontrado"}), 404
 
     # --- NOVAS REGRAS DE LIMITES ---
-    if amount < 30: 
-        return jsonify({"erro": True, "msg": "O depósito mínimo é de R$ 30,00"}), 400
+    if amount < 20: 
+        return jsonify({"erro": True, "msg": "O depósito mínimo é de R$ 20,00"}), 400
     
     if amount > 3000: 
         return jsonify({"erro": True, "msg": "O depósito máximo é de R$ 3.000,00 por vez"}), 400
@@ -705,5 +705,6 @@ def withdrawal_action():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
 
 
