@@ -7,3 +7,4 @@ werkzeug
 email-validator
 gunicorn
 requests
+psycopg2-binary
