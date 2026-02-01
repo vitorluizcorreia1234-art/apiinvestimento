@@ -1,82 +1,110 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
+import mercadopago
 import datetime
 import os
 import random
+import time
 import string
 import re
-import base64
 
 app = Flask(__name__)
 
-# --- CONFIGURAÇÃO ---
-db_url = os.environ.get("DATABASE_URL", "sqlite:///nexus.db")
+# --- CONFIGURAÇÃO DO BANCO DE DADOS ---
+db_url = os.environ.get("DATABASE_URL")
+if not db_url:
+    db_url = "sqlite:///nexus.db"
+
+# Correção para o Render (Postgres)
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.secret_key = "nexus_core_system_v99"
+app.secret_key = "nexus_ultra_secure_key_v4_lion_mode"
 
 db = SQLAlchemy(app)
 CORS(app)
 
+# --- CONFIGURAÇÃO MERCADO PAGO ---
+# Seu Token de Acesso (PRODUÇÃO)
+MP_ACCESS_TOKEN = "APP_USR-5404172795263183-120500-011ecc797888559f820986bea6fd264b-511797801"
+sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
+
 ADMIN_PIN = "1234"
 
-# --- UTILITÁRIOS ---
-def clean_input(val):
-    """Remove tudo que não for número (para CPF e Telefone)"""
-    if not val: return ""
-    return re.sub(r'\D', '', str(val))
+# --- MODELOS (TABELAS) ---
 
-def generate_pix_payload(amount, user_id):
-    """Gera um código PIX Copia e Cola (Simulado mas formato válido para QR)"""
-    # Em produção, você usaria uma API (MercadoPago, StarkBank, etc)
-    # Aqui geramos uma string única para o frontend gerar o QR
-    txid = f"NEXUS{user_id}{int(datetime.datetime.now().timestamp())}"
-    return f"00020126330014BR.GOV.BCB.PIX0111yourkey@pix.com520400005303986540{amount:.2f}5802BR5909NEXUS_PAY6009SAO_PAULO62070503{txid}6304"
-
-# --- MODELOS ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
-    cpf = db.Column(db.String(14), unique=True, nullable=True) 
-    phone = db.Column(db.String(20), unique=True, nullable=True)
+    cpf = db.Column(db.String(14), unique=True, nullable=True)
+    phone = db.Column(db.String(20), nullable=True)
     balance = db.Column(db.Float, default=0.0)
     vip_level = db.Column(db.String(50), default='Iniciante')
 
-class Deposit(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    amount = db.Column(db.Float, nullable=False)
-    payload = db.Column(db.String(500))
-    status = db.Column(db.String(20), default='pendente') # pendente, pago
-    created_at = db.Column(db.DateTime, default=datetime.datetime.now)
-
 class PasswordReset(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    code = db.Column(db.String(6))
-    expires_at = db.Column(db.DateTime)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    code = db.Column(db.String(6), nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=False)
     used = db.Column(db.Boolean, default=False)
-    method = db.Column(db.String(10)) # email ou sms
+
+class Deposit(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    payment_id_mp = db.Column(db.String(50), unique=True, nullable=False) # ID do Mercado Pago
+    amount = db.Column(db.Float, nullable=False)
+    status = db.Column(db.String(20), default='pending') # pending, approved, rejected
+    created_at = db.Column(db.DateTime, default=datetime.datetime.now)
+
+class Plan(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), nullable=False)
+    duration_minutes = db.Column(db.Integer, nullable=False)
+    total_rate = db.Column(db.Float, nullable=False)
+    min_entry = db.Column(db.Float, default=30.0)
+
+class Investment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    plan_name = db.Column(db.String(50))
+    amount = db.Column(db.Float, nullable=False)
+    start_date = db.Column(db.DateTime, default=datetime.datetime.now)
+    end_date = db.Column(db.DateTime, nullable=False)
+    final_return = db.Column(db.Float, nullable=False)
+    status = db.Column(db.String(20), default='ativo')
+
+class Withdrawal(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    username = db.Column(db.String(80))
+    amount = db.Column(db.Float, nullable=False)
+    pix_key = db.Column(db.String(100), nullable=False)
+    status = db.Column(db.String(20), default='pendente')
+    date = db.Column(db.DateTime, default=datetime.datetime.now)
+
+class FinancialLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    type = db.Column(db.String(50))
+    amount = db.Column(db.Float, nullable=False)
+    description = db.Column(db.String(200))
+    date = db.Column(db.DateTime, default=datetime.datetime.now)
 
 class GameConfig(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    # Double
-    c_black = db.Column(db.Float, default=45.0)
-    c_red = db.Column(db.Float, default=45.0)
-    c_white = db.Column(db.Float, default=10.0)
-    m_black = db.Column(db.Float, default=2.0)
-    m_red = db.Column(db.Float, default=2.0)
-    m_white = db.Column(db.Float, default=14.0)
-    # Risk
+    mult_black = db.Column(db.Float, default=2.0)
+    mult_red = db.Column(db.Float, default=2.0)
+    mult_white = db.Column(db.Float, default=14.0)
+    chance_black = db.Column(db.Float, default=45.0)
+    chance_red = db.Column(db.Float, default=45.0)
+    chance_white = db.Column(db.Float, default=10.0)
     mines_edge = db.Column(db.Float, default=30.0)
+    aviator_max_mult = db.Column(db.Float, default=10.0)
     aviator_edge = db.Column(db.Float, default=10.0)
-    aviator_max = db.Column(db.Float, default=10.0)
 
 class SystemStatus(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -85,240 +113,538 @@ class SystemStatus(db.Model):
     active_mines = db.Column(db.Boolean, default=True)
     active_aviator = db.Column(db.Boolean, default=True)
 
-# Investment, Withdrawal, FinancialLog e Plan mantidos simplificados
-class Plan(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(50)); duration_minutes = db.Column(db.Integer); total_rate = db.Column(db.Float); min_entry = db.Column(db.Float)
-class Investment(db.Model):
-    id = db.Column(db.Integer, primary_key=True); user_id = db.Column(db.Integer); plan_name = db.Column(db.String(50)); amount = db.Column(db.Float); end_date = db.Column(db.DateTime); final_return = db.Column(db.Float); status = db.Column(db.String(20))
-class Withdrawal(db.Model):
-    id = db.Column(db.Integer, primary_key=True); user_id = db.Column(db.Integer); username = db.Column(db.String(80)); amount = db.Column(db.Float); pix_key = db.Column(db.String(100)); status = db.Column(db.String(20)); date = db.Column(db.DateTime, default=datetime.datetime.now)
-
 # --- INIT ---
 with app.app_context():
     db.create_all()
-    if not GameConfig.query.first(): db.session.add(GameConfig())
-    if not SystemStatus.query.first(): db.session.add(SystemStatus())
+    if not Plan.query.first():
+        db.session.add(Plan(name="Crash 24h", duration_minutes=1440, total_rate=0.05, min_entry=50))
+    if not GameConfig.query.first():
+        db.session.add(GameConfig())
+    if not SystemStatus.query.first():
+        db.session.add(SystemStatus())
     db.session.commit()
 
-# --- AUTH AVANÇADO ---
+# --- AUXILIARES ---
+def clean_input(text):
+    """Remove caracteres especiais, mantendo apenas números"""
+    if not text: return ""
+    return re.sub(r'[^0-9]', '', str(text))
+
+def check_maintenance(game_type):
+    s = SystemStatus.query.first()
+    if not s: return False
+    if game_type == 'invest' and not s.active_invest: return True
+    if game_type == 'double' and not s.active_double: return True
+    if game_type == 'mines' and not s.active_mines: return True
+    if game_type == 'aviator' and not s.active_aviator: return True
+    return False
+
+def registrar_log(tipo, valor, desc):
+    log = FinancialLog(type=tipo, amount=valor, description=desc)
+    db.session.add(log)
+
+# --- ROTAS DE AUTH (LOGIN POWER) ---
+
 @app.route('/login', methods=['POST'])
 def login():
-    d = request.json
-    login_input = d.get('login', '').strip()
-    password = d.get('password')
+    data = request.json
+    login_input = data.get('login', '').strip()
+    password = data.get('password', '').strip()
     
-    clean_val = clean_input(login_input) # Apenas números para tentar match em CPF/Tel
+    # Tenta limpar o input caso seja CPF ou Telefone (apenas números)
+    clean_login = clean_input(login_input)
 
-    # Busca Hierárquica: Username -> Email -> CPF -> Telefone
-    user = User.query.filter(
-        (User.username == login_input) |
-        (User.email == login_input) |
-        (User.cpf == clean_val) |
-        (User.phone == clean_val)
-    ).first()
+    # Busca em TODOS os campos possíveis
+    # 1. Username ou Email (busca direta)
+    user = User.query.filter((User.username == login_input) | (User.email == login_input)).first()
+    
+    # 2. Se não achou e tem números, tenta CPF ou Phone
+    if not user and clean_login:
+        user = User.query.filter((User.cpf == clean_login) | (User.phone == clean_login)).first()
 
     if user and user.password == password:
         return jsonify({
-            "success": True, "id": user.id, "username": user.username,
-            "balance": user.balance, "vip": user.vip_level
+            "success": True, # Flag importante pro front
+            "id": user.id,
+            "username": user.username,
+            "balance": user.balance,
+            "vip_level": user.vip_level
         })
-    return jsonify({"success": False, "msg": "Dados de acesso incorretos."}), 401
+    
+    return jsonify({"erro": True, "msg": "Dados de acesso incorretos."}), 401
 
 @app.route('/register', methods=['POST'])
 def register():
-    d = request.json
-    cpf = clean_input(d.get('cpf'))
-    phone = clean_input(d.get('phone'))
+    data = request.json
+
+    # Sanitização
+    username = data.get('username', '').strip()
+    email = data.get('email', '').strip()
+    cpf = clean_input(data.get('cpf'))
+    phone = clean_input(data.get('phone'))
+    password = data.get('password')
+
+    if not username or not email or not password:
+         return jsonify({"erro": True, "msg": "Preencha todos os campos obrigatórios."}), 400
+
+    if User.query.filter_by(username=username).first():
+        return jsonify({"erro": True, "msg": "Usuário indisponível."}), 400
+    if User.query.filter_by(email=email).first():
+        return jsonify({"erro": True, "msg": "Email já cadastrado."}), 400
+    if cpf and User.query.filter_by(cpf=cpf).first():
+        return jsonify({"erro": True, "msg": "CPF já existe no sistema."}), 400
     
-    # Validações Rígidas
-    if User.query.filter_by(username=d['username']).first(): return jsonify({"success":False, "msg": "Usuário já existe"}), 400
-    if User.query.filter_by(email=d['email']).first(): return jsonify({"success":False, "msg": "Email já usado"}), 400
-    if User.query.filter_by(cpf=cpf).first(): return jsonify({"success":False, "msg": "CPF já cadastrado"}), 400
-    if User.query.filter_by(phone=phone).first(): return jsonify({"success":False, "msg": "Telefone já cadastrado"}), 400
-    
-    new_user = User(username=d['username'], email=d['email'], password=d['password'], cpf=cpf, phone=phone)
+    new_user = User(username=username, email=email, password=password, cpf=cpf, phone=phone)
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"success": True})
 
+# -- RECUPERAÇÃO DE SENHA (GMAIL & TELEFONE) --
 @app.route('/auth/recover', methods=['POST'])
-def recover():
-    d = request.json
-    val = d.get('contact') # Pode ser email ou tel
-    clean_val = clean_input(val)
+def recover_password():
+    data = request.json
+    identifier = data.get('email', '').strip() # Front manda email ou telefone aqui
     
-    user = User.query.filter((User.email == val) | (User.phone == clean_val)).first()
-    if not user: return jsonify({"success": True, "msg": "Código enviado (se existir)."}) # Fake success para segurança
+    # Tenta achar usuário por Email ou Telefone (limpo)
+    clean_id = clean_input(identifier)
+    
+    user = User.query.filter(
+        (User.email == identifier) | 
+        (User.phone == clean_id)
+    ).first()
 
+    if not user:
+        # Retorna fake success para segurança
+        return jsonify({"success": True, "msg": "Se os dados conferem, o código foi enviado."})
+
+    # Gera código
     code = ''.join(random.choices(string.digits, k=6))
-    expr = datetime.datetime.now() + datetime.timedelta(minutes=10)
-    
-    # Salva código
-    reset = PasswordReset(user_id=user.id, code=code, expires_at=expr, method='generic')
-    db.session.add(reset)
-    db.session.commit()
-    
-    # LOG NO CONSOLE PARA TESTE (Em produção usaria SMTP/SMS Gateway)
-    print(f"\n[SISTEMA DE RECUPERAÇÃO] Código para {user.username}: {code}\n")
-    
-    return jsonify({"success": True, "msg": "Código enviado! Verifique SMS/Email.", "dev_code": code})
+    expires = datetime.datetime.now() + datetime.timedelta(minutes=15)
 
-@app.route('/auth/reset', methods=['POST'])
-def reset_pass():
-    d = request.json
-    reset = PasswordReset.query.filter_by(code=d['code'], used=False).first()
+    reset_entry = PasswordReset(user_id=user.id, code=code, expires_at=expires)
+    db.session.add(reset_entry)
+    db.session.commit()
+
+    # LOGICA DE ENVIO (SIMULADA)
+    # Aqui você integraria Twilio (SMS) ou SMTP (Email)
+    # Por enquanto, mostramos no console do servidor
+    print(f"========================================")
+    print(f"🔐 RECUPERAÇÃO DE SENHA PARA: {user.username}")
+    print(f"📧 Canal: {user.email} | 📱 {user.phone}")
+    print(f"🔑 CÓDIGO: {code}")
+    print(f"========================================")
+
+    return jsonify({"success": True, "msg": "Código enviado! Verifique seu Email/SMS.", "debug_code": code})
+
+@app.route('/auth/verify_code', methods=['POST'])
+def verify_code():
+    data = request.json
+    reset = PasswordReset.query.filter_by(code=data['code'], used=False).first()
     if not reset or reset.expires_at < datetime.datetime.now():
         return jsonify({"success": False, "msg": "Código inválido ou expirado"})
+    return jsonify({"success": True, "reset_id": reset.id})
+
+@app.route('/auth/reset_password', methods=['POST'])
+def reset_password():
+    data = request.json
+    reset = PasswordReset.query.get(data['reset_id'])
+    if not reset or reset.used:
+        return jsonify({"success": False, "msg": "Solicitação inválida"})
     
     user = User.query.get(reset.user_id)
-    user.password = d['new_password']
+    user.password = data['new_password']
     reset.used = True
     db.session.commit()
-    return jsonify({"success": True})
+    return jsonify({"success": True, "msg": "Senha alterada com sucesso!"})
 
-# --- SISTEMA PIX (Depósito) ---
-@app.route('/deposit/generate', methods=['POST'])
-def deposit_generate():
-    d = request.json
-    user = User.query.get(d['user_id'])
-    amount = float(d['amount'])
-    
-    if amount < 1: return jsonify({"success": False, "msg": "Mínimo R$ 1.00"})
-
-    # Gera payload
-    payload = generate_pix_payload(amount, user.id)
-    
-    dep = Deposit(user_id=user.id, amount=amount, payload=payload)
-    db.session.add(dep)
-    db.session.commit()
-    
+# --- STATUS DO SISTEMA ---
+@app.route('/system/status', methods=['GET'])
+def get_system_status():
+    s = SystemStatus.query.first()
     return jsonify({
-        "success": True, 
-        "payload": payload, 
-        "qr_img": f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={payload}",
-        "deposit_id": dep.id
+        "invest": s.active_invest,
+        "double": s.active_double,
+        "mines": s.active_mines,
+        "aviator": s.active_aviator,
+        "status": "online"
     })
 
-@app.route('/deposit/check/<int:dep_id>', methods=['GET'])
-def check_deposit(dep_id):
-    # Endpoint para o front verificar se caiu (Long Polling)
-    # No "God Mode", você pode criar um botão no admin para aprovar depósitos manuais se não tiver gateway real
-    dep = Deposit.query.get(dep_id)
-    return jsonify({"status": dep.status})
+# --- PAGAMENTOS (MERCADO PAGO REAL) ---
 
-# --- ROTAS ADMIN E JOGOS (Compactadas mas com lógica completa) ---
-@app.route('/admin/auth', methods=['POST'])
-def admin_auth():
-    return jsonify({"success": True}) if request.json.get('pin') == ADMIN_PIN else jsonify({"success": False})
-
-@app.route('/admin/data', methods=['GET'])
-def admin_data():
-    # Retorna dados completos para o Admin Panel
-    users = [{"id":u.id, "username":u.username, "balance":u.balance, "vip":u.vip_level} for u in User.query.all()]
-    wds = [{"id":w.id, "user":w.username, "amount":w.amount, "pix":w.pix_key, "date":w.date.strftime('%d/%m %H:%M')} for w in Withdrawal.query.filter_by(status='pendente').all()]
-    cfg = GameConfig.query.first()
-    sys = SystemStatus.query.first()
-    return jsonify({
-        "users": users, "withdrawals": wds,
-        "game": {"c_black": cfg.c_black, "c_red": cfg.c_red, "c_white": cfg.c_white, "m_black": cfg.m_black, "m_red": cfg.m_red, "mines_edge": cfg.mines_edge, "aviator_max": cfg.aviator_max},
-        "system": {"active_double": sys.active_double, "active_mines": sys.active_mines, "active_aviator": sys.active_aviator}
-    })
-
-# User Info
-@app.route('/user/<int:uid>', methods=['GET'])
-def get_user(uid):
-    u = User.query.get(uid)
-    return jsonify({"id":u.id, "username":u.username, "balance":u.balance, "vip":u.vip_level}) if u else jsonify({"error":True}), 404
-
-# Saques
-@app.route('/solicitar_saque', methods=['POST'])
-def saque():
-    d = request.json
-    u = User.query.get(d['user_id'])
-    amt = float(d['amount'])
-    if u.balance < amt: return jsonify({"success":False, "msg":"Saldo Insuficiente"})
-    u.balance -= amt
-    db.session.add(Withdrawal(user_id=u.id, username=u.username, amount=amt, pix_key=d['pix']))
-    db.session.commit()
-    return jsonify({"success":True, "msg": "Saque solicitado!"})
-
-# --- LÓGICA DE JOGO (Double, Mines, Aviator) ---
-@app.route('/game/spin', methods=['POST']) # Double
-def double_spin():
-    d = request.json
-    u = User.query.get(d['user_id'])
-    bet = float(d['bet_amount']); color = d['bet_color']
+@app.route('/deposit/pix', methods=['POST'])
+def create_pix_deposit():
+    data = request.json
+    user_id = data.get('user_id')
+    amount = float(data.get('amount'))
     
-    if u.balance < bet: return jsonify({"success":False, "msg":"Sem saldo"})
-    u.balance -= bet
-    
-    cfg = GameConfig.query.first()
-    # Lógica de Probabilidade
-    rng = random.uniform(0, 100)
-    res = "white"
-    if rng < cfg.c_black: res = "black"
-    elif rng < cfg.c_black + cfg.c_red: res = "red"
-    
-    win = (res == color)
-    w_amt = 0
-    if win:
-        mult = cfg.m_white if res == 'white' else (cfg.m_black if res == 'black' else cfg.m_red)
-        w_amt = bet * mult
-        u.balance += w_amt
+    user = User.query.get(user_id)
+    if not user: return jsonify({"erro": True, "msg": "Usuário não encontrado"}), 404
+    if amount < 1: return jsonify({"erro": True, "msg": "Valor mínimo R$ 1.00"}), 400
+
+    try:
+        payment_data = {
+            "transaction_amount": amount,
+            "description": f"Recarga Nexus - {user.username}",
+            "payment_method_id": "pix",
+            "payer": {
+                "email": user.email,
+                "first_name": user.username,
+                "identification": {
+                    "type": "CPF",
+                    "number": user.cpf if user.cpf else "00000000000" # Fallback se não tiver CPF
+                }
+            }
+        }
+
+        payment_response = sdk.payment().create(payment_data)
+        payment = payment_response["response"]
+
+        if payment["status"] == 400:
+             return jsonify({"erro": True, "msg": "Erro nos dados do pagamento (Verifique CPF/Email)"}), 400
+
+        # Salvar depósito pendente no BD
+        new_dep = Deposit(
+            user_id=user.id,
+            payment_id_mp=str(payment["id"]),
+            amount=amount,
+            status='pending'
+        )
+        db.session.add(new_dep)
+        db.session.commit()
+
+        # Dados para o Front
+        qr_code = payment["point_of_interaction"]["transaction_data"]["qr_code"]
+        qr_img = payment["point_of_interaction"]["transaction_data"]["qr_code_base64"]
+
+        return jsonify({
+            "success": True,
+            "payment_id": payment["id"],
+            "qr_code": qr_code,     # Copia e Cola
+            "qr_base64": qr_img     # Imagem
+        })
+
+    except Exception as e:
+        print("ERRO MP:", e)
+        return jsonify({"erro": True, "msg": "Erro ao comunicar com Mercado Pago"}), 500
+
+@app.route('/deposit/check', methods=['POST'])
+def check_deposit_status():
+    """Verifica se pagou e libera saldo"""
+    data = request.json
+    payment_id = data.get('payment_id')
+
+    # Busca no nosso banco
+    deposit = Deposit.query.filter_by(payment_id_mp=str(payment_id)).first()
+    if not deposit:
+        return jsonify({"success": False, "msg": "Depósito não encontrado"})
+
+    if deposit.status == 'approved':
+        return jsonify({"success": True, "status": "approved", "msg": "Já aprovado!"})
+
+    # Consulta Mercado Pago
+    try:
+        mp_res = sdk.payment().get(int(payment_id))
+        mp_status = mp_res["response"]["status"]
         
+        if mp_status == 'approved':
+            # ATUALIZA SALDO (CRÍTICO)
+            user = User.query.get(deposit.user_id)
+            user.balance += deposit.amount
+            
+            deposit.status = 'approved'
+            registrar_log('deposito', deposit.amount, f"PIX Aprovado - {user.username}")
+            
+            db.session.commit()
+            return jsonify({"success": True, "status": "approved", "new_balance": user.balance})
+        
+        return jsonify({"success": True, "status": mp_status}) # pending ou rejected
+
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
+
+
+@app.route('/solicitar_saque', methods=['POST'])
+def solicitar_saque():
+    data = request.json
+    user = User.query.get(data['user_id'])
+    amount = float(data['amount'])
+    
+    if amount <= 0: return jsonify({"success": False, "msg": "Valor inválido."})
+    if user.balance < amount: return jsonify({"success": False, "msg": "Saldo insuficiente."})
+
+    user.balance -= amount
+    wd = Withdrawal(user_id=user.id, username=user.username, amount=amount, pix_key=data['pix'])
+    db.session.add(wd)
     db.session.commit()
-    return jsonify({"success":True, "result_color":res, "win":win, "win_amount":w_amt, "new_balance":u.balance})
+    return jsonify({"success": True, "msg": "Solicitação enviada."})
+
+
+# --- JOGOS (COM VALIDAÇÃO ANTI-NEGATIVO) ---
+
+@app.route('/game/config', methods=['GET'])
+def get_game_config():
+    cfg = GameConfig.query.first()
+    return jsonify({
+        "chances": {"black": cfg.chance_black, "red": cfg.chance_red, "white": cfg.chance_white},
+        "payouts": {"black": cfg.mult_black, "red": cfg.mult_red, "white": cfg.mult_white}
+    })
+
+@app.route('/game/spin', methods=['POST'])
+def spin_game():
+    if check_maintenance('double'): return jsonify({"success": False, "msg": "Manutenção!"})
+    data = request.json
+    user = User.query.get(data['user_id'])
+    bet = float(data['bet_amount'])
+    color = data['bet_color']
+
+    if bet <= 0: return jsonify({"success": False, "msg": "Aposta inválida"})
+    if user.balance < bet: return jsonify({"success": False, "msg": "Saldo insuficiente"})
+    
+    user.balance -= bet
+    
+    cfg = GameConfig.query.first()
+    total = cfg.chance_black + cfg.chance_red + cfg.chance_white
+    r = random.uniform(0, total)
+
+    res_color = "white"
+    if r < cfg.chance_black: res_color = "black"
+    elif r < cfg.chance_black + cfg.chance_red: res_color = "red"
+
+    win = (res_color == color)
+    win_amt = 0
+    if win:
+        mult = cfg.mult_white if res_color == 'white' else (cfg.mult_black if res_color == 'black' else cfg.mult_red)
+        win_amt = bet * mult
+        user.balance += win_amt
+
+    db.session.commit()
+    return jsonify({"success": True, "result_color": res_color, "win": win, "win_amount": win_amt, "new_balance": user.balance})
 
 @app.route('/game/aviator/play', methods=['POST'])
 def aviator_play():
-    d = request.json
-    u = User.query.get(d['user_id'])
-    bet = float(d['bet_amount'])
-    if u.balance < bet: return jsonify({"success":False, "msg":"Sem saldo"})
-    u.balance -= bet
+    if check_maintenance('aviator'): return jsonify({"success": False, "msg": "Manutenção!"})
+    data = request.json
+    user = User.query.get(data['user_id'])
+    bet = float(data['bet_amount'])
+
+    if bet <= 0: return jsonify({"success": False, "msg": "Aposta inválida"})
+    if user.balance < bet: return jsonify({"success": False, "msg": "Saldo insuficiente"})
+
+    user.balance -= bet
     
     cfg = GameConfig.query.first()
-    # Se "Edge" (Chance da casa) bater, crasha em 1.00x
-    crash = 1.00
-    if random.uniform(0,100) > cfg.aviator_edge:
-        # Gera multiplicador
-        mult = 1.0 + random.expovariate(0.15) # Curva exponencial
-        if mult > cfg.aviator_max: mult = cfg.aviator_max
-        crash = round(mult, 2)
-        
+    # Lógica de Crash
+    if random.uniform(0, 100) < cfg.aviator_edge:
+        crash = 1.00
+    else:
+        # Algoritmo de crash exponencial simples
+        x = random.uniform(1, 100)
+        mult = 0.99 / (1 - (x / 100))
+        # Limita ao max configurado
+        if mult > cfg.aviator_max_mult: mult = cfg.aviator_max_mult
+        crash = max(1.00, round(mult, 2))
+
     db.session.commit()
-    return jsonify({"success":True, "crash_point":crash, "new_balance":u.balance})
+    return jsonify({"success": True, "crash_point": crash, "new_balance": user.balance})
 
 @app.route('/game/aviator/cashout', methods=['POST'])
 def aviator_cashout():
-    d = request.json
-    u = User.query.get(d['user_id'])
-    u.balance += float(d['win_amount'])
+    data = request.json
+    user = User.query.get(data['user_id'])
+    win = float(data['win_amount'])
+    
+    # Validação simples para evitar injeção direta
+    if win <= 0: return jsonify({"success": False})
+    
+    user.balance += win
     db.session.commit()
-    return jsonify({"success":True, "new_balance":u.balance})
+    return jsonify({"success": True, "new_balance": user.balance})
 
 @app.route('/game/mines/play', methods=['POST'])
 def mines_play():
-    d = request.json
-    u = User.query.get(d['user_id'])
-    bet = float(d['bet_amount'])
-    if u.balance < bet: return jsonify({"success":False, "msg":"Sem saldo"})
-    u.balance -= bet
+    if check_maintenance('mines'): return jsonify({"success": False, "msg": "Manutenção!"})
+    data = request.json
+    user = User.query.get(data['user_id'])
+    bet = float(data['bet_amount'])
+
+    if bet <= 0: return jsonify({"success": False, "msg": "Aposta inválida"})
+    if user.balance < bet: return jsonify({"success": False, "msg": "Saldo insuficiente"})
+
+    user.balance -= bet
     
     cfg = GameConfig.query.first()
-    rigged = (random.uniform(0,100) < cfg.mines_edge)
+    rigged = (random.uniform(0, 100) < cfg.mines_edge)
+
     db.session.commit()
-    return jsonify({"success":True, "new_balance":u.balance, "rigged":rigged})
+    return jsonify({"success": True, "new_balance": user.balance, "rigged": rigged})
 
 @app.route('/game/mines/cashout', methods=['POST'])
 def mines_cashout():
-    # Igual ao aviator, só soma
-    d = request.json
-    u = User.query.get(d['user_id'])
-    u.balance += float(d['win_amount'])
+    data = request.json
+    user = User.query.get(data['user_id'])
+    win = float(data['win_amount'])
+    
+    if win <= 0: return jsonify({"success": False})
+
+    user.balance += win
     db.session.commit()
-    return jsonify({"success":True, "new_balance":u.balance})
+    return jsonify({"success": True, "new_balance": user.balance})
+
+# --- ROTAS DE USUÁRIO E INVESTIMENTO ---
+
+@app.route('/user/<int:user_id>', methods=['GET'])
+def get_user(user_id):
+    u = User.query.get(user_id)
+    if not u: return jsonify({"erro": True}), 404
+    check_investments_status(user_id)
+    return jsonify({
+        "id": u.id, "balance": u.balance,
+        "vip_level": u.vip_level, "username": u.username,
+        "cpf": u.cpf, "email": u.email
+    })
+
+def check_investments_status(user_id):
+    invs = Investment.query.filter_by(user_id=user_id, status='ativo').all()
+    now = datetime.datetime.now()
+    changed = False
+    for i in invs:
+        if now >= i.end_date:
+            i.status = 'finalizado'
+            changed = True
+    if changed: db.session.commit()
+
+@app.route('/plans', methods=['GET'])
+def get_plans():
+    plans = Plan.query.all()
+    return jsonify([{"id": p.id, "name": p.name, "min": p.min_entry, "minutes": p.duration_minutes, "rate": p.total_rate} for p in plans])
+
+@app.route('/investir', methods=['POST'])
+def investir():
+    if check_maintenance('invest'): return jsonify({"success": False, "msg": "Manutenção!"})
+    data = request.json
+    user = User.query.get(data['user_id'])
+    plan = Plan.query.get(data['plan_id'])
+    amount = float(data['amount'])
+
+    if amount <= 0: return jsonify({"success": False, "msg": "Valor inválido"})
+    if user.balance < amount: return jsonify({"success": False, "msg": "Saldo insuficiente"})
+
+    final_return = amount + (amount * plan.total_rate)
+    end_date = datetime.datetime.now() + datetime.timedelta(minutes=plan.duration_minutes)
+
+    inv = Investment(user_id=user.id, plan_name=plan.name, amount=amount, end_date=end_date, final_return=final_return)
+    user.balance -= amount
+    db.session.add(inv)
+    db.session.commit()
+    return jsonify({"success": True})
+
+@app.route('/meus_investimentos/<int:user_id>', methods=['GET'])
+def meus_investimentos(user_id):
+    check_investments_status(user_id)
+    invs = Investment.query.filter_by(user_id=user_id).order_by(Investment.start_date.desc()).all()
+    return jsonify([{
+        "id": i.id, "plan": i.plan_name, "amount": i.amount, "final_return": i.final_return,
+        "start_ts": i.start_date.timestamp() * 1000, "end_ts": i.end_date.timestamp() * 1000, "status": i.status
+    } for i in invs])
+
+@app.route('/invest/withdraw_profit', methods=['POST'])
+def withdraw_invest_profit():
+    data = request.json
+    inv = Investment.query.get(data['invest_id'])
+    if not inv or inv.status == 'pago' or datetime.datetime.now() < inv.end_date:
+        return jsonify({"success": False, "msg": "Erro ao sacar"})
+
+    user = User.query.get(inv.user_id)
+    user.balance += inv.final_return
+    inv.status = 'pago'
+    db.session.commit()
+    return jsonify({"success": True, "amount": inv.final_return})
+
+# --- ADMIN API (RESUMIDA) ---
+
+@app.route('/admin/auth', methods=['POST'])
+def admin_auth():
+    if request.json.get('pin') == ADMIN_PIN: return jsonify({"success": True})
+    return jsonify({"success": False}), 403
+
+@app.route('/admin/data', methods=['GET'])
+def admin_data():
+    users = [{"id": u.id, "username": u.username, "balance": u.balance, "vip": u.vip_level, "cpf": u.cpf, "phone": u.phone} for u in User.query.all()]
+    plans = [{"id": p.id, "name": p.name, "minutes": p.duration_minutes, "rate": p.total_rate, "min": p.min_entry} for p in Plan.query.all()]
+    withdrawals = [{"id": w.id, "user": w.username, "amount": w.amount, "pix": w.pix_key, "status": w.status, "date": w.date.strftime('%Y-%m-%d %H:%M')} for w in Withdrawal.query.filter_by(status='pendente').all()]
+    cfg = GameConfig.query.first()
+    sys = SystemStatus.query.first()
+    return jsonify({
+        "users": users, "plans": plans, "withdrawals": withdrawals,
+        "game": {"c_black": cfg.chance_black, "c_red": cfg.chance_red, "c_white": cfg.chance_white, 
+                 "m_black": cfg.mult_black, "m_red": cfg.mult_red, "m_white": cfg.mult_white,
+                 "mines_edge": cfg.mines_edge, "aviator_edge": cfg.aviator_edge, "aviator_max": cfg.aviator_max_mult},
+        "system": {"active_invest": sys.active_invest, "active_double": sys.active_double, "active_mines": sys.active_mines, "active_aviator": sys.active_aviator}
+    })
+
+@app.route('/admin/toggle_system', methods=['POST'])
+def toggle_system():
+    data = request.json
+    s = SystemStatus.query.first()
+    t, v = data['type'], data['val']
+    if t == 'invest': s.active_invest = v
+    if t == 'double': s.active_double = v
+    if t == 'mines': s.active_mines = v
+    if t == 'aviator': s.active_aviator = v
+    db.session.commit()
+    return jsonify({"success": True})
+
+@app.route('/admin/save_game_config', methods=['POST'])
+def save_game_config():
+    data = request.json
+    cfg = GameConfig.query.first()
+    if 'c_black' in data: cfg.chance_black = float(data['c_black'])
+    if 'c_red' in data: cfg.chance_red = float(data['c_red'])
+    if 'c_white' in data: cfg.chance_white = float(data['c_white'])
+    if 'm_black' in data: cfg.mult_black = float(data['m_black'])
+    if 'm_red' in data: cfg.mult_red = float(data['m_red'])
+    if 'm_white' in data: cfg.mult_white = float(data['m_white'])
+    if 'mines_edge' in data: cfg.mines_edge = float(data['mines_edge'])
+    if 'aviator_edge' in data: cfg.aviator_edge = float(data['aviator_edge'])
+    if 'aviator_max' in data: cfg.aviator_max_mult = float(data['aviator_max'])
+    db.session.commit()
+    return jsonify({"success": True})
+
+@app.route('/admin/save_plan', methods=['POST'])
+def save_plan():
+    data = request.json
+    if 'id' in data and data['id']: p = Plan.query.get(data['id'])
+    else: p = Plan(); db.session.add(p)
+    p.name = data['name']; p.duration_minutes = int(data['minutes']); p.total_rate = float(data['rate']); p.min_entry = float(data['min'])
+    db.session.commit()
+    return jsonify({"success": True})
+
+@app.route('/admin/delete_plan/<int:id>', methods=['DELETE'])
+def delete_plan(id):
+    Plan.query.filter_by(id=id).delete()
+    db.session.commit()
+    return jsonify({"success": True})
+
+@app.route('/admin/user_action', methods=['POST'])
+def user_action():
+    data = request.json
+    u = User.query.get(data['id'])
+    if 'vip' in data: u.vip_level = data['vip']
+    if 'balance' in data: u.balance += float(data['balance'])
+    db.session.commit()
+    return jsonify({"success": True})
+
+@app.route('/admin/withdrawal_action', methods=['POST'])
+def withdrawal_action():
+    data = request.json
+    wd = Withdrawal.query.get(data['id'])
+    if wd.status != 'pendente': return jsonify({"success": False})
+    if data['action'] == 'approve': wd.status = 'aprovado'
+    elif data['action'] == 'reject':
+        wd.status = 'rejeitado'
+        User.query.get(wd.user_id).balance += wd.amount
+    db.session.commit()
+    return jsonify({"success": True})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
