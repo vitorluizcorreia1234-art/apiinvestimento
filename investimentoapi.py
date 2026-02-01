@@ -160,7 +160,7 @@ def registrar_log(tipo, valor, desc):
     log = FinancialLog(type=tipo, amount=valor, description=desc)
     db.session.add(log)
 
-current_round_bets = {"red": 0, "black": 0, "white": 0, "players": []}
+double_lobby = {"bets": {"red": 0.0, "black": 0.0, "white": 0.0}}
 
 # --- ROTAS DE AUTH (LOGIN POWER) ---
 
@@ -547,40 +547,39 @@ def aviator_cashout():
 def double_place_bet():
     global double_lobby
     data = request.json
-    # Os bots enviam 'is_bot': True, então os ignoramos no cálculo de lucro
     if not data.get('is_bot'):
         color = data['color']
         amount = float(data['amount'])
         double_lobby["bets"][color] += amount
-
     return jsonify({"success": True})
-
 
 @app.route('/game/double/get_result', methods=['GET'])
 def double_get_result():
     global double_lobby
+    cfg = GameConfig.query.first()
 
-    # Lógica de Menor Pagamento (House Edge)
-    # Payouts: Vermelho (2x), Preto (2x), Branco (14x)
-    payouts = {
-        "red": double_lobby["bets"]["red"] * 2,
-        "black": double_lobby["bets"]["black"] * 2,
-        "white": double_lobby["bets"]["white"] * 14
-    }
-
-    # A cor vencedora é aquela que exige o menor pagamento de volta aos players reais
-    result_color = min(payouts, key=payouts.get)
-
-    # Se houver empate em zero (ninguém apostou), sorteia aleatório
-    if all(v == 0 for v in payouts.values()):
-        import random
-        result_color = random.choices(['red', 'black', 'white'], weights=[45, 45, 10])[0]
+    # 1. Se ninguem apostou, usa a sorte baseada no Admin
+    if all(v == 0 for v in double_lobby["bets"].values()):
+        total = cfg.chance_black + cfg.chance_red + cfg.chance_white
+        r = random.uniform(0, total)
+        if r < cfg.chance_black:
+            result_color = "black"
+        elif r < cfg.chance_black + cfg.chance_red:
+            result_color = "red"
+        else:
+            result_color = "white"
+    else:
+        # 2. Se houver apostas, usa a lógica de menor prejuízo para a casa
+        payouts = {
+            "red": double_lobby["bets"]["red"] * cfg.mult_red,
+            "black": double_lobby["bets"]["black"] * cfg.mult_black,
+            "white": double_lobby["bets"]["white"] * cfg.mult_white
+        }
+        result_color = min(payouts, key=payouts.get)
 
     # Reseta o lobby para a próxima rodada
-    double_lobby = {"bets": {"red": 0.0, "black": 0.0, "white": 0.0}, "players": []}
-
+    double_lobby = {"bets": {"red": 0.0, "black": 0.0, "white": 0.0}}
     return jsonify({"result_color": result_color})
-
 
 @app.route('/game/mines/play', methods=['POST'])
 def mines_play():
