@@ -66,21 +66,35 @@ class Withdrawal(db.Model):
     status = db.Column(db.String(20), default='pendente')
     date = db.Column(db.DateTime, default=datetime.datetime.now)
 
+class FinancialLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    type = db.Column(db.String(50))  # 'entrada' (deposito/perda do user) ou 'saida' (saque/vitoria do user)
+    amount = db.Column(db.Float, nullable=False)
+    description = db.Column(db.String(200))
+    date = db.Column(db.DateTime, default=datetime.datetime.now)
 
 class GameConfig(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    # Double (existente)
     mult_black = db.Column(db.Float, default=2.0)
     mult_red = db.Column(db.Float, default=2.0)
     mult_white = db.Column(db.Float, default=14.0)
     chance_black = db.Column(db.Float, default=45.0)
     chance_red = db.Column(db.Float, default=45.0)
     chance_white = db.Column(db.Float, default=10.0)
+    # Mines (NOVO) - Chance de 0 a 100 da bomba aparecer se o usuário estiver ganhando muito
+    mines_edge = db.Column(db.Float, default=30.0)
+    # Aviator (NOVO) - Multiplicador máximo permitido antes de forçar o crash
+    aviator_max_mult = db.Column(db.Float, default=5.0)
+    aviator_edge = db.Column(db.Float, default=30.0) # Chance de crashar instantâneo (1.00x)
 
 
 class SystemStatus(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     active_invest = db.Column(db.Boolean, default=True)
     active_double = db.Column(db.Boolean, default=True)
+    active_mines = db.Column(db.Boolean, default=True)  # Novo
+    active_aviator = db.Column(db.Boolean, default=True) # Novo
 
 
 # --- DB INIT ---
@@ -103,6 +117,12 @@ def check_maintenance(game_type):
     if game_type == 'double' and not status.active_double:
         return True
     return False
+
+def registrar_log(tipo, valor, desc):
+    # Se tipo for 'entrada', é lucro pra casa. Se for 'saida', é prejuízo pra casa.
+    log = FinancialLog(type=tipo, amount=valor, description=desc)
+    db.session.add(log)
+    # Nota: O commit deve ser feito na rota que chamar essa função
 
 
 # --- ROTAS GERAIS ---
@@ -335,6 +355,72 @@ def user_action():
     return jsonify({"success": True})
 
 
+@app.route('/game/mines/play', methods=['POST'])
+def play_mines():
+    if check_maintenance('mines'): return jsonify({"success": False, "msg": "Mines em manutenção!"})
+
+    data = request.json
+    user = User.query.get(data['user_id'])
+    bet = float(data['bet_amount'])
+    mines_count = int(data['mines_count'])  # Quantas bombas o player escolheu
+
+    if user.balance < bet: return jsonify({"success": False, "msg": "Saldo insuficiente"})
+
+    # 1. Debita a aposta
+    user.balance -= bet
+    registrar_log('entrada', bet, f"Aposta Mines - User {user.username}")  # Dinheiro entrou pra casa
+
+    # 2. Lógica da Trapaça (House Edge)
+    cfg = GameConfig.query.first()
+    is_rigged = False
+
+    # Se o sistema decidir roubar (baseado na % do painel admin)
+    if random.uniform(0, 100) < cfg.mines_edge:
+        is_rigged = True  # O player VAI perder na próxima jogada arriscada
+
+    # Salva estado temporário se necessário, mas para simplificar,
+    # retornamos se o jogo está "armado" ou não para o front controlar (ou o backend validar o cashout).
+    # Numa arquitetura segura, o backend valida cada clique.
+    # Para seu código atual, vamos simplificar:
+
+    db.session.commit()
+    return jsonify({"success": True, "new_balance": user.balance, "rigged": is_rigged})
+
+
+@app.route('/game/mines/cashout', methods=['POST'])
+def cashout_mines():
+    data = request.json
+    user = User.query.get(data['user_id'])
+    win_amount = float(data['win_amount'])
+
+    user.balance += win_amount
+    registrar_log('saida', win_amount, f"Pagamento Mines - User {user.username}")  # Saiu da casa
+    db.session.commit()
+    return jsonify({"success": True, "new_balance": user.balance})
+
+
+@app.route('/invest/withdraw_profit', methods=['POST'])
+def withdraw_invest_profit():
+    data = request.json
+    inv_id = data['invest_id']
+    inv = Investment.query.get(inv_id)
+
+    if not inv or inv.status != 'ativo':  # Só saca se tiver ativo e finalizado
+        return jsonify({"success": False, "msg": "Investimento inválido ou já pago."})
+
+    now = datetime.datetime.now()
+    if now < inv.end_date:
+        return jsonify({"success": False, "msg": "Ainda em andamento!"})
+
+    user = User.query.get(inv.user_id)
+    user.balance += inv.final_return
+    inv.status = 'pago'  # Marca como pago para sumir/mudar status
+
+    registrar_log('saida', inv.final_return, f"Retorno Investimento - {inv.plan_name}")
+
+    db.session.commit()
+    return jsonify({"success": True, "amount": inv.final_return, "msg": "Lucro resgatado com sucesso!"})
+
 @app.route('/admin/withdrawal_action', methods=['POST'])
 def withdrawal_action():
     data = request.json
@@ -361,6 +447,22 @@ def save_game_config():
     cfg.mult_white = float(data['m_white'])
     db.session.commit()
     return jsonify({"success": True})
+
+
+@app.route('/admin/financial_logs', methods=['GET'])
+def get_financial_logs():
+    # Pega os últimos 50 logs
+    logs = FinancialLog.query.order_by(FinancialLog.date.desc()).limit(50).all()
+
+    total_in = db.session.query(db.func.sum(FinancialLog.amount)).filter_by(type='entrada').scalar() or 0
+    total_out = db.session.query(db.func.sum(FinancialLog.amount)).filter_by(type='saida').scalar() or 0
+    profit = total_in - total_out
+
+    return jsonify({
+        "logs": [{"date": l.date.strftime('%d/%m %H:%M'), "type": l.type, "amount": l.amount, "desc": l.description} for
+                 l in logs],
+        "stats": {"total_in": total_in, "total_out": total_out, "profit": profit}
+    })
 
 
 if __name__ == '__main__':
