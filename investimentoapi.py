@@ -126,12 +126,6 @@ class ActiveGame(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     nonce = db.Column(db.String(50))  # Token de segurança
 
-class GameHistory(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    game = db.Column(db.String(20), nullable=False) # 'double' ou 'aviator'
-    result = db.Column(db.String(20)) # Para double: 'red', 'black', 'white'
-    multiplier = db.Column(db.Float) # Para aviator: 12.50
-    created_at = db.Column(db.DateTime, default=datetime.datetime.now)
 
 # --- DECORATOR DE SEGURANÇA ADMIN ---
 def admin_required(f):
@@ -226,12 +220,6 @@ def register():
     db.session.commit()
     return jsonify({"success": True})
 
-@app.route('/game/history/<game_type>', methods=['GET'])
-def get_game_history(game_type):
-    # Pega os últimos 20 resultados
-    history = GameHistory.query.filter_by(game=game_type).order_by(GameHistory.created_at.desc()).limit(20).all()
-    # Retorna invertido para o frontend mostrar na ordem certa (antigo -> novo)
-    return jsonify([{"result": h.result, "multiplier": h.multiplier} for h in reversed(history)])
 
 @app.route('/auth/recover', methods=['POST'])
 def recover_password():
@@ -378,13 +366,14 @@ def spin_game():
     if check_maintenance('double'): return jsonify({"success": False, "msg": "Manutenção"})
     data = request.json
     user = User.query.with_for_update().get(data['user_id'])
+    bet = float(data['bet_amount'])
 
-    # Validação do Botão de Apostar (Agora recebemos a aposta só se ele clicar no botão)
-    bet = float(data.get('bet_amount', 0))
-    chosen_color = data.get('bet_color')  # Pode ser None se ele não apostou e só está olhando
+    if user.balance < bet or bet <= 0: return jsonify({"success": False, "msg": "Saldo erro"})
 
-    # Lógica de Resultado (Sempre roda, mesmo sem aposta, para simular o "Ao Vivo")
+    user.balance -= bet
+
     cfg = GameConfig.query.first()
+    # Lógica de Probabilidade (Simples)
     total = cfg.chance_black + cfg.chance_red + cfg.chance_white
     r = random.uniform(0, total)
 
@@ -394,35 +383,22 @@ def spin_game():
     elif r < cfg.chance_black + cfg.chance_red:
         res = "red"
 
-    # Salva no Histórico
-    new_hist = GameHistory(game='double', result=res)
-    db.session.add(new_hist)
-
-    win = False
+    win = (res == data['bet_color'])
     win_amt = 0
-    new_balance = user.balance
-
-    # Só processa dinheiro se houve aposta
-    if bet > 0 and chosen_color:
-        if user.balance < bet: return jsonify({"success": False, "msg": "Saldo insuficiente"})
-        user.balance -= bet
-
-        if res == chosen_color:
-            mult = cfg.mult_white if res == 'white' else (cfg.mult_black if res == 'black' else cfg.mult_red)
-            win_amt = bet * mult
-            user.balance += win_amt
-            win = True
-
-        new_balance = user.balance
+    if win:
+        mult = cfg.mult_white if res == 'white' else (cfg.mult_black if res == 'black' else cfg.mult_red)
+        win_amt = bet * mult
+        user.balance += win_amt
 
     db.session.commit()
-    return jsonify({
-        "success": True,
-        "result_color": res,
-        "win": win,
-        "win_amount": win_amt,
-        "new_balance": new_balance
-    })
+    return jsonify(
+        {"success": True, "result_color": res, "win": win, "win_amount": win_amt, "new_balance": user.balance})
+
+
+# --- MINES SEGURO (ANTI-FRAUDE) ---
+# O servidor deve guardar o estado do jogo.
+# Para manter compatibilidade com seu Front atual que é "stateless",
+# vamos implementar uma verificação básica de limite.
 
 @app.route('/game/mines/play', methods=['POST'])
 def mines_play():
@@ -505,8 +481,7 @@ def aviator_play():
             crash = random.uniform(1.50, 1.99)
         else:
             crash = random.uniform(2.00, cfg.aviator_max_mult)
-    # Salva histórico do crash
-    db.session.add(GameHistory(game='aviator', multiplier=round(crash, 2)))
+
     db.session.commit()
     return jsonify({"success": True, "crash_point": round(crash, 2), "new_balance": user.balance})
 
