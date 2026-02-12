@@ -115,6 +115,10 @@ class SystemStatus(db.Model):
     active_mines = db.Column(db.Boolean, default=True)
     active_aviator = db.Column(db.Boolean, default=True)
 
+class AviatorHistory(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    crash_point = db.Column(db.Float, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.now)
 
 # Nova Tabela para Controle de Jogo Ativo (Anti-Fraude)
 class ActiveGame(db.Model):
@@ -281,6 +285,16 @@ def get_system_status():
         "invest": s.active_invest, "double": s.active_double,
         "mines": s.active_mines, "aviator": s.active_aviator, "status": "online"
     })
+
+@app.route('/game/aviator/history', methods=['GET'])
+def get_aviator_history():
+    # Pega os últimos 20 resultados
+    history = AviatorHistory.query.order_by(AviatorHistory.created_at.desc()).limit(20).all()
+    # Se não tiver histórico (primeira vez), gera alguns fakes para não ficar vazio
+    results = [h.crash_point for h in history]
+    if not results:
+        results = [1.20, 2.50, 1.10, 5.00, 1.05]
+    return jsonify(results[::-1]) # Inverte para ordem cronológica
 
 
 @app.route('/deposit/pix', methods=['POST'])
@@ -454,26 +468,29 @@ def mines_cashout():
 # --- AVIATOR (Crash) ---
 @app.route('/game/aviator/play', methods=['POST'])
 def aviator_play():
-    if check_maintenance('aviator'): return jsonify({"success": False})
+    if check_maintenance('aviator'): return jsonify({"success": False, "msg": "Manutenção"})
     data = request.json
     user = User.query.with_for_update().get(data['user_id'])
     bet = float(data['bet_amount'])
 
-    if user.balance < bet: return jsonify({"success": False})
+    # --- TRAVA DE MÍNIMO R$ 2.00 ---
+    if bet < 2.00:
+        return jsonify({"success": False, "msg": "Aposta mínima no Aviator é R$ 2.00"})
+
+    if user.balance < bet: return jsonify({"success": False, "msg": "Saldo insuficiente"})
     user.balance -= bet
 
-    # Regista jogo
+    # Registra jogo ativo para o usuário
     ActiveGame.query.filter_by(user_id=user.id, game_type='aviator').delete()
     db.session.add(ActiveGame(user_id=user.id, game_type='aviator', bet_amount=bet))
 
-    # Lógica de Crash (Igual a sua original)
+    # Lógica de Crash
     cfg = GameConfig.query.first()
     crash = 1.00
     if cfg.force_crash_rounds > 0:
         crash = round(random.uniform(1.00, 1.30), 2)
         cfg.force_crash_rounds -= 1
     else:
-        # Lógica resumida para brevidade
         r = random.uniform(0, 100)
         if r < cfg.aviator_prob_low:
             crash = random.uniform(1.00, 1.49)
@@ -482,9 +499,14 @@ def aviator_play():
         else:
             crash = random.uniform(2.00, cfg.aviator_max_mult)
 
-    db.session.commit()
-    return jsonify({"success": True, "crash_point": round(crash, 2), "new_balance": user.balance})
+    crash = round(crash, 2)
 
+    # --- SALVAR NO HISTÓRICO GLOBAL ---
+    # Isso permite que quem entrar depois veja os resultados anteriores
+    db.session.add(AviatorHistory(crash_point=crash))
+
+    db.session.commit()
+    return jsonify({"success": True, "crash_point": crash, "new_balance": user.balance})
 
 @app.route('/game/aviator/cashout', methods=['POST'])
 def aviator_cashout():
