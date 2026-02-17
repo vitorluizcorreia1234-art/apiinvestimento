@@ -1,10 +1,5 @@
-Flask==3.0.0
-Flask-SocketIO==5.3.6
-Flask-SQLAlchemy==3.1.1
-Flask-CORS==4.0.0
-PyJWT==2.8.0
-werkzeug==3.0.1
-mercadopago==2.2.0
-eventlet==0.33.3
-gunicorn==21.2.0
-psycopg2-binary==2.9.9
+Flask
+Flask-Cors
+Flask-SQLAlchemy
+mercadopago
+psycopg2-binary
