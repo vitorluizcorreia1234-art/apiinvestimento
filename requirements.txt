@@ -3,3 +3,4 @@ Flask-Cors
 Flask-SQLAlchemy
 mercadopago
 psycopg2-binary
+gunicorn
