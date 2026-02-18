@@ -32,11 +32,6 @@ app.config['SECRET_KEY'] = SECRET_KEY
 
 db = SQLAlchemy(app)
 
-# --- ADICIONE O BLOCO EXATAMENTE AQUI ---
-with app.app_context():
-    db.create_all()
-    print("Banco de dados sincronizado e tabelas criadas!")
-
 # ==========================================
 # CONFIGURAÇÃO MERCADO PAGO E E-MAIL
 # ==========================================
@@ -67,6 +62,8 @@ def enviar_email_recuperacao(destino, codigo):
 # MODELOS DE BANCO DE DADOS
 # ==========================================
 class User(db.Model):
+    __tablename__ = 'users' # CORREÇÃO: Evita conflito com a palavra reservada 'user' no PostgreSQL
+    
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
@@ -80,14 +77,47 @@ class User(db.Model):
     reset_code_exp = db.Column(db.DateTime, nullable=True)
 
 class Transaction(db.Model):
+    __tablename__ = 'transactions'
+    
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False) # CORREÇÃO: Aponta para 'users.id'
     type = db.Column(db.String(20), nullable=False) # 'deposit' ou 'withdraw'
     amount = db.Column(db.Float, nullable=False)
     status = db.Column(db.String(20), default='pending') # 'pending', 'approved', 'rejected'
     pix_key = db.Column(db.String(100), nullable=True)
     external_id = db.Column(db.String(100), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+# ==========================================
+# INICIALIZAÇÃO SEGURA DO BANCO DE DADOS
+# ==========================================
+# Função que garante a criação das tabelas no Render (mesmo com Gunicorn)
+def setup_database():
+    with app.app_context():
+        try:
+            db.create_all()
+            # CRIAÇÃO DO ADMIN INICIAL CASO O BANCO SEJA ZERADO
+            if not User.query.filter_by(username='admin').first():
+                hashed = generate_password_hash('Nexus@Admin2026', method='pbkdf2:sha256')
+                admin = User(
+                    username='admin', 
+                    email='admin@nexus.com', 
+                    cpf='00000000000', 
+                    phone='000', 
+                    password_hash=hashed, 
+                    role='admin', 
+                    vip='adm'
+                )
+                db.session.add(admin)
+                db.session.commit()
+                print(">>> BANCO DE DADOS SINCRONIZADO E ADMIN CRIADO: admin / Nexus@Admin2026 <<<")
+            else:
+                print(">>> BANCO DE DADOS PRONTO (ADMIN JÁ EXISTE) <<<")
+        except Exception as e:
+            print(f">>> ERRO AO SINCRONIZAR BANCO DE DADOS: {e} <<<")
+
+# Executa a configuração imediatamente na inicialização
+setup_database()
 
 # ==========================================
 # DECORADORES DE SEGURANÇA (MIDDLEWARES)
@@ -174,7 +204,7 @@ def forgot_password():
         # Disparo real do e-mail
         enviar_email_recuperacao(user.email, code)
         
-    # Sempre retorna sucesso para evitar que descubram quais e-mails existem no banco (boa prática)
+    # Sempre retorna sucesso para evitar que descubram quais e-mails existem no banco
     return jsonify({'success': True, 'msg': 'Código enviado!'})
 
 @app.route('/api/auth/reset_password', methods=['POST'])
@@ -332,7 +362,7 @@ def admin_dashboard(current_user):
 @admin_required
 def admin_withdraw_action(current_user):
     data = request.json
-    trans = Transaction.query.with_for_update().get(data.get('id'))
+    trans = Transaction.query.get(data.get('id'))
     if not trans or trans.status != 'pending': 
         return jsonify({'success': False, 'msg': 'Erro ou saque já processado.'})
 
@@ -369,23 +399,15 @@ def admin_user_update(current_user):
 def admin_user_delete(current_user):
     target_user = User.query.get(request.json.get('id'))
     if target_user:
+        # CORREÇÃO: Remove transações antes de deletar o usuário para evitar erros do Banco
+        Transaction.query.filter_by(user_id=target_user.id).delete()
         db.session.delete(target_user)
         db.session.commit()
     return jsonify({'success': True})
 
 # ==========================================
-# INICIALIZAÇÃO
+# INICIALIZAÇÃO DA APLICAÇÃO
 # ==========================================
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
-        # CRIAÇÃO DO ADMIN INICIAL CASO O BANCO SEJA ZERADO
-        if not User.query.filter_by(username='admin').first():
-            hashed = generate_password_hash('Nexus@Admin2026', method='pbkdf2:sha256')
-            db.session.add(User(username='admin', email='admin@nexus.com', cpf='00000000000', phone='000', password_hash=hashed, role='admin', vip='adm'))
-            db.session.commit()
-            print(">>> GOD MODE CRIADO: admin / Nexus@Admin2026 <<<")
-
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
-
