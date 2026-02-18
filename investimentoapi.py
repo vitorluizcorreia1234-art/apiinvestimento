@@ -32,6 +32,11 @@ app.config['SECRET_KEY'] = SECRET_KEY
 
 db = SQLAlchemy(app)
 
+# --- ADICIONE O BLOCO EXATAMENTE AQUI ---
+with app.app_context():
+    db.create_all()
+    print("Banco de dados sincronizado e tabelas criadas!")
+
 # ==========================================
 # CONFIGURAÇÃO MERCADO PAGO E E-MAIL
 # ==========================================
@@ -383,3 +388,4 @@ if __name__ == '__main__':
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
