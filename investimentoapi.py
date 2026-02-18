@@ -320,15 +320,16 @@ def admin_user_delete(current_user):
 
 if __name__ == '__main__':
     with app.app_context():
-    db.create_all()
-    # CRIAÇÃO DO ADMIN INICIAL CASO O BANCO SEJA ZERADO
-    if not User.query.filter_by(username='admin').first():
-        hashed = generate_password_hash('Nexus@Admin2026', method='pbkdf2:sha256')
-        db.session.add(User(username='admin', email='admin@nexus.com', cpf='00000000000', phone='000', password_hash=hashed, role='admin', vip='adm'))
-        db.session.commit()
-        print(">>> GOD MODE CRIADO: admin / Nexus@Admin2026 <<<")
+        db.create_all()
+        # CRIAÇÃO DO ADMIN INICIAL CASO O BANCO SEJA ZERADO
+        if not User.query.filter_by(username='admin').first():
+            hashed = generate_password_hash('Nexus@Admin2026', method='pbkdf2:sha256')
+            db.session.add(User(username='admin', email='admin@nexus.com', cpf='00000000000', phone='000', password_hash=hashed, role='admin', vip='adm'))
+            db.session.commit()
+            print(">>> GOD MODE CRIADO: admin / Nexus@Admin2026 <<<")
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
 
