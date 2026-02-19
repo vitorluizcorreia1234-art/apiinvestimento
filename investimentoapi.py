@@ -323,7 +323,7 @@ def game_win(current_user):
 # ALGORITMO DOUBLE (ANTI-PREJUÍZO)
 # ==========================================
 # ==========================================
-# ALGORITMO DOUBLE (LÓGICA FINANCEIRA / HOUSE PROFIT)
+# ALGORITMO DOUBLE (LÓGICA FINANCEIRA ABSOLUTA)
 # ==========================================
 @app.route('/api/game/double/spin', methods=['POST'])
 @token_required
@@ -338,10 +338,10 @@ def double_spin(current_user):
     if bet_amount <= 0 or bet_amount > current_user.balance:
         return jsonify({'success': False, 'msg': 'Saldo insuficiente.'})
 
-    # 1. Deduz a aposta do saldo (O dinheiro entra para a casa)
+    # 1. A Casa pega o dinheiro da aposta (Caixa aumenta)
     current_user.balance -= bet_amount
 
-    # MODO STREAMER (VIP): Ganha sempre, ignora lucro da casa
+    # MODO STREAMER: Ignora lucro, deixa o influencer ganhar
     if current_user.vip == 'streamer':
         result_color = bet_color
         win_amount = bet_amount * (14 if bet_color == 'white' else 2)
@@ -354,74 +354,50 @@ def double_spin(current_user):
             'new_balance': current_user.balance
         })
 
-    # --- LÓGICA DE GESTÃO DE BANCA (HOUSE PROFIT) ---
+    # --- LÓGICA MATEMÁTICA DE MENOR PREJUÍZO ---
 
-    # Aqui calculamos quanto a casa PERDERIA em cada cenário possível
-
-    # Cenário A: Se der VERMELHO
-    liability_red = 0
+    # Vamos calcular quanto a casa TERIA que pagar em cada cenário possível.
+    # Cenário 1: Cair VERMELHO
+    payout_red = 0
     if bet_color == 'red':
-        liability_red = bet_amount * 2  # Casa paga 2x
+        payout_red = bet_amount * 2
 
-    # Cenário B: Se der PRETO
-    liability_black = 0
+    # Cenário 2: Cair PRETO
+    payout_black = 0
     if bet_color == 'black':
-        liability_black = bet_amount * 2  # Casa paga 2x
+        payout_black = bet_amount * 2
 
-    # Cenário C: Se der BRANCO
-    liability_white = 0
+    # Cenário 3: Cair BRANCO
+    payout_white = 0
     if bet_color == 'white':
-        liability_white = bet_amount * 14  # Casa paga 14x
+        payout_white = bet_amount * 14
 
-    # Montamos a tabela de decisão
-    scenarios = [
-        {'color': 'red', 'house_loss': liability_red},
-        {'color': 'black', 'house_loss': liability_black},
-        {'color': 'white', 'house_loss': liability_white}
+    # Lista de cenários [Cor, Quanto a Casa Paga]
+    options = [
+        {'color': 'red', 'loss': payout_red},
+        {'color': 'black', 'loss': payout_black},
+        {'color': 'white', 'loss': payout_white}
     ]
 
-    # ORDENAÇÃO INTELIGENTE:
-    # O sistema ordena do MENOR prejuízo para o MAIOR prejuízo.
-    # O primeiro item da lista (índice 0) é o melhor para a casa (lucro máximo/prejuízo mínimo).
-    scenarios.sort(key=lambda x: x['house_loss'])
+    # ORDENAÇÃO PELO MENOR PREJUÍZO (Lucro Máximo)
+    # O sort coloca no topo da lista as cores onde a casa paga MENOS (ou zero).
+    options.sort(key=lambda x: x['loss'])
 
-    # DECISÃO DO ALGORITMO:
-    # Chance de pegar o MELHOR resultado para a casa (Lucro Total): 90%
-    # Chance de pegar o SEGUNDO melhor (Empate ou perda menor): 10%
-    # Chance de pegar o PIOR resultado (Pagar o usuário): 0% (Blindado)
+    # Filtra apenas as melhores opções (Empates de melhor lucro)
+    # Ex: Apostou Vermelho. Red=Perda, Black=0, White=0. Melhores: Black e White.
+    best_loss = options[0]['loss']
+    best_outcomes = [opt['color'] for opt in options if opt['loss'] == best_loss]
 
-    rng = random.random()
+    # DECISÃO "SEM RESPEITAR NADA"
+    # Sorteia aleatoriamente apenas entre as MELHORES opções para a casa.
+    # Se o Branco estiver entre as melhores (ex: apostou no Preto), ele tem chance igual de cair.
+    # Não aplicamos pesos de raridade aqui. A prioridade é financeira.
 
-    if rng < 0.90:
-        # 90% das vezes escolhe a opção que dá mais lucro pra casa
-        # Se o usuário apostou Preto, o melhor pra casa é Vermelho ou Branco (Loss = 0)
-        # O sort() já colocou essas opções no topo.
-
-        # Detalhe: Se Vermelho e Branco dão lucro igual (0), precisamos desempatar pelos pesos reais
-        # para não cair Branco demais sem querer.
-        best_scenarios = [s for s in scenarios if s['house_loss'] == scenarios[0]['house_loss']]
-
-        # Dentre os melhores cenários, aplica pesos "reais" (Branco é raro)
-        weights = []
-        choices = []
-        for s in best_scenarios:
-            choices.append(s['color'])
-            if s['color'] == 'white':
-                weights.append(5)  # Branco é difícil cair
-            else:
-                weights.append(47.5)  # Cores comuns
-
-        result_color = random.choices(choices, weights=weights, k=1)[0]
-
-    else:
-        # 10% de chance de cair no "meio termo" (Geralmente a outra cor que faz o usuário perder também)
-        # Ex: Usuário apostou Branco. Melhores cenários: Red (Loss 0), Black (Loss 0).
-        # O sistema pega o segundo da lista.
-        result_color = scenarios[1]['color']
+    result_color = random.choice(best_outcomes)
 
     # --- FIM DA LÓGICA ---
 
-    # Verifica se o usuário ganhou (baseado na cor que o sistema escolheu acima)
+    # Verifica se o usuário ganhou (baseado na decisão acima)
     win_amount = 0
     if result_color == bet_color:
         multiplier = 14 if result_color == 'white' else 2
