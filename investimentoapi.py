@@ -320,29 +320,33 @@ def game_win(current_user):
 
 
 # ==========================================
-# ALGORITMO DOUBLE (ANTI-PREJUÍZO)
-# ==========================================
-# ==========================================
-# ALGORITMO DOUBLE (LÓGICA FINANCEIRA ABSOLUTA)
+# ALGORITMO DOUBLE (MAXIMIZAÇÃO DE LUCRO GLOBAL)
 # ==========================================
 @app.route('/api/game/double/spin', methods=['POST'])
 @token_required
 def double_spin(current_user):
     data = request.json
     bet_color = data.get('color')
+
     try:
-        bet_amount = float(data.get('amount', 0))
+        bet_amount = float(data.get('amount', 0)) if data.get('amount') else 0
     except:
         return jsonify({'success': False, 'msg': 'Valor inválido.'})
 
-    if bet_amount <= 0 or bet_amount > current_user.balance:
+    # Totais da mesa enviados pelo frontend (incluindo bots e o jogador)
+    total_red = float(data.get('total_red', 0))
+    total_black = float(data.get('total_black', 0))
+    total_white = float(data.get('total_white', 0))
+
+    if bet_amount > 0 and bet_amount > current_user.balance:
         return jsonify({'success': False, 'msg': 'Saldo insuficiente.'})
 
-    # 1. A Casa pega o dinheiro da aposta (Caixa aumenta)
-    current_user.balance -= bet_amount
+    # 1. A Casa pega o dinheiro da aposta real
+    if bet_amount > 0:
+        current_user.balance -= bet_amount
 
-    # MODO STREAMER: Ignora lucro, deixa o influencer ganhar
-    if current_user.vip == 'streamer':
+    # MODO STREAMER: Ignora o algoritmo, sempre força o influencer a ganhar
+    if current_user.vip == 'streamer' and bet_color:
         result_color = bet_color
         win_amount = bet_amount * (14 if bet_color == 'white' else 2)
         current_user.balance += win_amount
@@ -353,6 +357,48 @@ def double_spin(current_user):
             'win_amount': win_amount,
             'new_balance': current_user.balance
         })
+
+    # --- LÓGICA DE MAXIMIZAÇÃO DE LUCRO DA CASA ---
+
+    # Calcula quanto a casa teria que pagar para todos os players em cada cenário
+    payout_red = total_red * 2
+    payout_black = total_black * 2
+    payout_white = total_white * 14
+
+    # Lista de cenários [Cor, Prejuízo da Casa]
+    options = [
+        {'color': 'red', 'loss': payout_red},
+        {'color': 'black', 'loss': payout_black},
+        {'color': 'white', 'loss': payout_white}
+    ]
+
+    # Ordena pelo MENOR PREJUÍZO (O que a casa perde menos)
+    options.sort(key=lambda x: x['loss'])
+
+    # Pega apenas a melhor opção (ou opções, caso de empate)
+    best_loss = options[0]['loss']
+    best_outcomes = [opt['color'] for opt in options if opt['loss'] == best_loss]
+
+    # Sorteia a cor que garante o maior lucro / menor perda
+    result_color = random.choice(best_outcomes)
+
+    # --- FIM DA LÓGICA PREDATÓRIA ---
+
+    # Verifica se o jogador real deu a sorte de cair na mesma cor que a casa escolheu
+    win_amount = 0
+    if bet_color and result_color == bet_color:
+        multiplier = 14 if result_color == 'white' else 2
+        win_amount = bet_amount * multiplier
+        current_user.balance += win_amount
+
+    db.session.commit()
+
+    return jsonify({
+        'success': True,
+        'result_color': result_color,
+        'win_amount': win_amount,
+        'new_balance': current_user.balance
+    })
 
     # --- LÓGICA MATEMÁTICA DE MENOR PREJUÍZO ---
 
@@ -374,7 +420,7 @@ def double_spin(current_user):
 
     # Lista de cenários [Cor, Quanto a Casa Paga]
     options = [
-        {'color': 'red', 'loss': payout_red},
+        {'color': 'red',   'loss': payout_red},
         {'color': 'black', 'loss': payout_black},
         {'color': 'white', 'loss': payout_white}
     ]
