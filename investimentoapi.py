@@ -400,66 +400,6 @@ def double_spin(current_user):
         'new_balance': current_user.balance
     })
 
-    # --- LÓGICA MATEMÁTICA DE MENOR PREJUÍZO ---
-
-    # Vamos calcular quanto a casa TERIA que pagar em cada cenário possível.
-    # Cenário 1: Cair VERMELHO
-    payout_red = 0
-    if bet_color == 'red':
-        payout_red = bet_amount * 2
-
-    # Cenário 2: Cair PRETO
-    payout_black = 0
-    if bet_color == 'black':
-        payout_black = bet_amount * 2
-
-    # Cenário 3: Cair BRANCO
-    payout_white = 0
-    if bet_color == 'white':
-        payout_white = bet_amount * 14
-
-    # Lista de cenários [Cor, Quanto a Casa Paga]
-    options = [
-        {'color': 'red',   'loss': payout_red},
-        {'color': 'black', 'loss': payout_black},
-        {'color': 'white', 'loss': payout_white}
-    ]
-
-    # ORDENAÇÃO PELO MENOR PREJUÍZO (Lucro Máximo)
-    # O sort coloca no topo da lista as cores onde a casa paga MENOS (ou zero).
-    options.sort(key=lambda x: x['loss'])
-
-    # Filtra apenas as melhores opções (Empates de melhor lucro)
-    # Ex: Apostou Vermelho. Red=Perda, Black=0, White=0. Melhores: Black e White.
-    best_loss = options[0]['loss']
-    best_outcomes = [opt['color'] for opt in options if opt['loss'] == best_loss]
-
-    # DECISÃO "SEM RESPEITAR NADA"
-    # Sorteia aleatoriamente apenas entre as MELHORES opções para a casa.
-    # Se o Branco estiver entre as melhores (ex: apostou no Preto), ele tem chance igual de cair.
-    # Não aplicamos pesos de raridade aqui. A prioridade é financeira.
-
-    result_color = random.choice(best_outcomes)
-
-    # --- FIM DA LÓGICA ---
-
-    # Verifica se o usuário ganhou (baseado na decisão acima)
-    win_amount = 0
-    if result_color == bet_color:
-        multiplier = 14 if result_color == 'white' else 2
-        win_amount = bet_amount * multiplier
-        current_user.balance += win_amount
-
-    db.session.commit()
-
-    return jsonify({
-        'success': True,
-        'result_color': result_color,
-        'win_amount': win_amount,
-        'new_balance': current_user.balance
-    })
-
-
 # ==========================================
 # TERMINAL DE COMANDO - PAINEL ADMIN NINJA
 # ==========================================
