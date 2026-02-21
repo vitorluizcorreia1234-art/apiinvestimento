@@ -3,6 +3,7 @@ import datetime
 import random
 import string
 import smtplib
+import requests
 import threading
 from email.message import EmailMessage
 from functools import wraps
@@ -45,25 +46,42 @@ sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 SMTP_USER = os.environ.get("SMTP_USER", "nexusinvestimento24@gmail.com")
 SMTP_PASS = os.environ.get("SMTP_PASS", "pzvn fuuo cavm ljay")
 
+# ==========================================
+# ENVIO DE E-MAIL VIA API (FURA-BLOQUEIO DO RENDER)
+# ==========================================
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY")
+
 
 def enviar_email_recuperacao(destino, codigo):
-    try:
-        print(f">>> [THREAD] Iniciando login no SMTP para enviar a {destino}...", flush=True)
-        msg = EmailMessage()
-        msg.set_content(
-            f"Olá!\n\nSeu código de recuperação de senha da plataforma NEXUS é: {codigo}\n\nEste código expira em 15 minutos.")
-        msg['Subject'] = 'Código de Recuperação - NEXUS'
-        msg['From'] = SMTP_USER
-        msg['To'] = destino
+    print(f">>> [THREAD] Iniciando envio via API Brevo para {destino}...", flush=True)
 
-        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
-        server.login(SMTP_USER, SMTP_PASS)
-        server.send_message(msg)
-        server.quit()
-        print(f">>> [THREAD] E-mail enviado com sucesso para {destino}!", flush=True)
-        return True
+    url = "https://api.brevo.com/v3/smtp/email"
+
+    payload = {
+        "sender": {"name": "Suporte NEXUS", "email": "nexusinvestimento24@gmail.com"},
+        "to": [{"email": destino}],
+        "subject": "Código de Recuperação - NEXUS",
+        "htmlContent": f"<h2>Olá!</h2><p>O seu código de recuperação de senha da plataforma NEXUS é: <strong><span style='font-size: 24px; color: #7000ff;'>{codigo}</span></strong></p><p>Este código expira em 15 minutos.</p>"
+    }
+
+    headers = {
+        "accept": "application/json",
+        "api-key": BREVO_API_KEY,
+        "content-type": "application/json"
+    }
+
+    try:
+        # Faz o envio usando a porta HTTPS (443) que o Render nunca bloqueia
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+
+        if response.status_code in [200, 201, 202]:
+            print(f">>> [THREAD] E-mail enviado com sucesso via API para {destino}!", flush=True)
+            return True
+        else:
+            print(f">>> [THREAD] Erro na API do Brevo: {response.text}", flush=True)
+            return False
     except Exception as e:
-        print(">>> [THREAD] Erro SMTP CRÍTICO:", e, flush=True)
+        print(">>> [THREAD] Erro crítico ao chamar API do Brevo:", e, flush=True)
         return False
 
 
@@ -485,4 +503,3 @@ def admin_user_delete(current_user):
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
-
