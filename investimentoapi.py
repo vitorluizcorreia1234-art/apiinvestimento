@@ -48,6 +48,7 @@ SMTP_PASS = os.environ.get("SMTP_PASS", "pzvn fuuo cavm ljay")
 
 def enviar_email_recuperacao(destino, codigo):
     try:
+        print(f">>> [THREAD] Iniciando login no SMTP para enviar a {destino}...", flush=True)
         msg = EmailMessage()
         msg.set_content(
             f"Olá!\n\nSeu código de recuperação de senha da plataforma NEXUS é: {codigo}\n\nEste código expira em 15 minutos.")
@@ -59,9 +60,10 @@ def enviar_email_recuperacao(destino, codigo):
         server.login(SMTP_USER, SMTP_PASS)
         server.send_message(msg)
         server.quit()
+        print(f">>> [THREAD] E-mail enviado com sucesso para {destino}!", flush=True)
         return True
     except Exception as e:
-        print("Erro SMTP:", e)
+        print(">>> [THREAD] Erro SMTP CRÍTICO:", e, flush=True)
         return False
 
 
@@ -215,20 +217,24 @@ def login():
 @app.route('/api/auth/forgot_password', methods=['POST'])
 def forgot_password():
     data = request.json
-    user = User.query.filter_by(email=data.get('email')).first()
+    email_digitado = data.get('email')
+
+    print(f">>> [API] Alguém pediu recuperação para o email: {email_digitado}", flush=True)
+
+    user = User.query.filter_by(email=email_digitado).first()
 
     if user:
+        print(">>> [API] Usuário EXISTE no banco! Gerando código e chamando a Thread...", flush=True)
         code = ''.join(random.choices(string.digits, k=6))
         user.reset_code = code
         user.reset_code_exp = datetime.datetime.utcnow() + datetime.timedelta(minutes=15)
         db.session.commit()
 
-        # DISPARO EM BACKGROUND (THREADING)
-        # O servidor inicia o envio em segundo plano e não fica travado esperando o Gmail responder
         thread_email = threading.Thread(target=enviar_email_recuperacao, args=(user.email, code))
         thread_email.start()
+    else:
+        print(">>> [API] Usuário NÃO ENCONTRADO no banco. Ignorando o e-mail silenciosamente.", flush=True)
 
-    # Retorna imediatamente para o front-end, sem congelar a tela de loading do usuário
     return jsonify({'success': True, 'msg': 'Código enviado!'})
 
 
