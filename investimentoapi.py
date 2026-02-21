@@ -12,6 +12,7 @@ from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
+import json
 import mercadopago
 
 # ==========================================
@@ -102,7 +103,10 @@ class User(db.Model):
     vip = db.Column(db.String(20), default='iniciante')  # 'iniciante', 'streamer', 'adm'
     reset_code = db.Column(db.String(6), nullable=True)
     reset_code_exp = db.Column(db.DateTime, nullable=True)
-
+    # NOVO: Sistema de Banimento
+    status = db.Column(db.String(20), default='active')  # 'active' ou 'banned'
+    ban_reason = db.Column(db.String(255), nullable=True)
+    last_ip = db.Column(db.String(50), nullable=True)
 
 class Transaction(db.Model):
     __tablename__ = 'transactions'
@@ -115,7 +119,24 @@ class Transaction(db.Model):
     pix_key = db.Column(db.String(100), nullable=True)
     external_id = db.Column(db.String(100), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    
+class Investment(db.Model):
+    __tablename__ = 'investments'
 
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    plan_id = db.Column(db.Integer, nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    yield_total = db.Column(db.Float, nullable=False)
+    days = db.Column(db.Integer, nullable=False)
+    start_time = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    claimed = db.Column(db.Boolean, default=False)
+
+class SystemConfig(db.Model):
+    __tablename__ = 'system_config'
+    key = db.Column(db.String(50), primary_key=True)
+    value = db.Column(db.Text, nullable=False)
 
 # ==========================================
 # INICIALIZAÇÃO SEGURA DO BANCO DE DADOS
@@ -141,7 +162,7 @@ def setup_database():
                 db.session.commit()
                 print(">>> BANCO DE DADOS SINCRONIZADO E ADMIN CRIADO: admin / Nexus@Admin2026 <<<")
             else:
-                print(">>> BANCO DE DADOS PRONTO (ADMIN JÁ EXISTE) <<<")
+                print(">>> BANCO DE DADOS PRONTO (ADMIN JÁ EXISTE) <")
         except Exception as e:
             print(f">>> ERRO AO SINCRONIZAR BANCO DE DADOS: {e} <<<")
 
@@ -159,13 +180,25 @@ def token_required(f):
         token = request.headers.get('Authorization')
         if not token or not token.startswith("Bearer "):
             return jsonify({'success': False, 'msg': 'Sessão inválida'}), 401
+
         token = token.split(" ")[1]
         try:
             data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = User.query.get(data['user_id'])
+
             if not current_user: raise Exception()
+
+            # --- SISTEMA DE BLOQUEIO ENTRA AQUI ---
+            if current_user.status == 'banned':
+                return jsonify({'success': False, 'msg': f'CONTA CONGELADA. Motivo: {current_user.ban_reason}'}), 403
+
+            # Registra o IP atual do usuário
+            current_user.last_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+            db.session.commit()
+
         except Exception:
             return jsonify({'success': False, 'msg': 'Sessão expirada. Refaça o login.'}), 401
+
         return f(current_user, *args, **kwargs)
 
     return decorated
@@ -346,15 +379,28 @@ def game_bet(current_user):
 @app.route('/api/game/win', methods=['POST'])
 @token_required
 def game_win(current_user):
-    win_amount = float(request.json.get('win_amount', 0))
+    try:
+        win_amount = Decimal(str(request.json.get('win_amount', 0)))
+    except:
+        return jsonify({'success': False, 'msg': 'Valor inválido'})
 
-    # Trava de Segurança Crítica contra injeção de valores maliciosos
-    if win_amount <= 0 or win_amount > 500000:
-        return jsonify({'success': False, 'msg': 'Valor suspeito detectado.'})
+    # --- ARMADILHA DO SISTEMA DE FRAUDE ---
+    if win_amount < 0 or win_amount > Decimal('50000'):
+        # Congela a conta na hora!
+        current_user.status = 'banned'
+        current_user.ban_reason = f'Tentativa de injeção de saldo anormal ({win_amount}) no IP {current_user.last_ip}'
+        db.session.commit()
+        print(f"🚨 ALERTA DE FRAUDE: Usuário {current_user.username} banido automaticamente!")
 
-    current_user.balance += win_amount
+        return jsonify(
+            {'success': False, 'msg': 'Atividade suspeita detectada. Sua conta foi bloqueada para auditoria.'}), 403
+
+    # Se passar pela armadilha, segue o fluxo normal com trava (Row Lock)
+    user_db = db.session.query(User).filter_by(id=current_user.id).with_for_update().first()
+    user_db.balance += win_amount
     db.session.commit()
-    return jsonify({'success': True, 'new_balance': current_user.balance})
+
+    return jsonify({'success': True, 'new_balance': float(user_db.balance)})
 
 
 # ==========================================
@@ -399,25 +445,20 @@ def double_spin(current_user):
     # --- LÓGICA DE MAXIMIZAÇÃO DE LUCRO DA CASA ---
 
     # Calcula quanto a casa teria que pagar para todos os players em cada cenário
-    payout_red = total_red * 2
-    payout_black = total_black * 2
-    payout_white = total_white * 14
+    payout_red = (bet_amount * 2) if bet_color == 'red' else 0
+    payout_black = (bet_amount * 2) if bet_color == 'black' else 0
+    payout_white = (bet_amount * 14) if bet_color == 'white' else 0
 
-    # Lista de cenários [Cor, Prejuízo da Casa]
     options = [
         {'color': 'red', 'loss': payout_red},
         {'color': 'black', 'loss': payout_black},
         {'color': 'white', 'loss': payout_white}
     ]
 
-    # Ordena pelo MENOR PREJUÍZO (O que a casa perde menos)
     options.sort(key=lambda x: x['loss'])
 
-    # Pega apenas a melhor opção (ou opções, caso de empate)
     best_loss = options[0]['loss']
     best_outcomes = [opt['color'] for opt in options if opt['loss'] == best_loss]
-
-    # Sorteia a cor que garante o maior lucro / menor perda
     result_color = random.choice(best_outcomes)
 
     # --- FIM DA LÓGICA PREDATÓRIA ---
@@ -437,6 +478,75 @@ def double_spin(current_user):
         'win_amount': win_amount,
         'new_balance': current_user.balance
     })
+
+
+# ==========================================
+# ROTAS DE INVESTIMENTO (NUVEM)
+# ==========================================
+@app.route('/api/investment/buy', methods=['POST'])
+@token_required
+def buy_investment(current_user):
+    data = request.json
+    amount = float(data.get('amount', 0))
+    plan_id = data.get('plan_id')
+    name = data.get('name')
+    yield_total = float(data.get('yieldTotal', 0))
+    days = int(data.get('days', 0))
+
+    if amount <= 0 or current_user.balance < amount:
+        return jsonify({'success': False, 'msg': 'Saldo insuficiente.'})
+
+    # Desconta do saldo
+    current_user.balance -= amount
+
+    # Salva no banco de dados
+    new_inv = Investment(
+        user_id=current_user.id, plan_id=plan_id, name=name,
+        amount=amount, yield_total=yield_total, days=days
+    )
+    db.session.add(new_inv)
+    db.session.commit()
+
+    return jsonify({'success': True, 'msg': 'Plano ativado!', 'new_balance': current_user.balance})
+
+
+@app.route('/api/investment/active', methods=['GET'])
+@token_required
+def get_active_investments(current_user):
+    investments = Investment.query.filter_by(user_id=current_user.id, claimed=False).all()
+    inv_list = []
+    for inv in investments:
+        inv_list.append({
+            'id': inv.id, 'plan_id': inv.plan_id, 'name': inv.name,
+            'amount': inv.amount, 'yieldTotal': inv.yield_total, 'days': inv.days,
+            'startTime': int(inv.start_time.timestamp() * 1000)  # Formato JS
+        })
+    return jsonify({'success': True, 'investments': inv_list})
+
+
+@app.route('/api/investment/claim', methods=['POST'])
+@token_required
+def claim_investment(current_user):
+    inv_id = request.json.get('inv_id')
+    inv = Investment.query.filter_by(id=inv_id, user_id=current_user.id, claimed=False).first()
+
+    if not inv:
+        return jsonify({'success': False, 'msg': 'Investimento não encontrado ou já resgatado.'})
+
+    # Valida no servidor se o tempo realmente passou!
+    end_time = inv.start_time + datetime.timedelta(days=inv.days)
+    if datetime.datetime.utcnow() < end_time:
+        return jsonify({'success': False, 'msg': 'O plano ainda não terminou de render.'})
+
+    # Calcula e paga
+    lucro = inv.amount * (inv.yield_total / 100)
+    total_a_pagar = inv.amount + lucro
+
+    inv.claimed = True
+    current_user.balance += total_a_pagar
+    db.session.commit()
+
+    return jsonify({'success': True, 'new_balance': current_user.balance, 'payout': total_a_pagar})
 
 # ==========================================
 # TERMINAL DE COMANDO - PAINEL ADMIN NINJA
@@ -505,6 +615,39 @@ def admin_user_delete(current_user):
         db.session.delete(target_user)
         db.session.commit()
     return jsonify({'success': True})
+
+
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    configs = SystemConfig.query.all()
+    # Converte os valores de volta de JSON para objeto/texto
+    data = {}
+    for c in configs:
+        try:
+            data[c.key] = json.loads(c.value)
+        except:
+            data[c.key] = c.value
+    return jsonify({'success': True, 'config': data})
+
+
+# Rota protegida pro Admin salvar as configurações
+@app.route('/api/admin/config', methods=['POST'])
+@admin_required
+def save_config(current_user):
+    data = request.json
+    for key, value in data.items():
+        # Converte para string JSON se for lista/dicionário (ex: planos de investimento)
+        val_str = json.dumps(value) if isinstance(value, (list, dict)) else str(value)
+
+        conf = SystemConfig.query.get(key)
+        if conf:
+            conf.value = val_str
+        else:
+            new_conf = SystemConfig(key=key, value=val_str)
+            db.session.add(new_conf)
+
+    db.session.commit()
+    return jsonify({'success': True, 'msg': 'Configurações globais salvas no Render!'})
 
 
 # ==========================================
