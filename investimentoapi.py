@@ -3,6 +3,7 @@ import datetime
 import random
 import string
 import smtplib
+import threading
 from email.message import EmailMessage
 from functools import wraps
 from flask import Flask, request, jsonify
@@ -215,16 +216,19 @@ def login():
 def forgot_password():
     data = request.json
     user = User.query.filter_by(email=data.get('email')).first()
+
     if user:
         code = ''.join(random.choices(string.digits, k=6))
         user.reset_code = code
         user.reset_code_exp = datetime.datetime.utcnow() + datetime.timedelta(minutes=15)
         db.session.commit()
 
-        # Disparo real do e-mail
-        enviar_email_recuperacao(user.email, code)
+        # DISPARO EM BACKGROUND (THREADING)
+        # O servidor inicia o envio em segundo plano e não fica travado esperando o Gmail responder
+        thread_email = threading.Thread(target=enviar_email_recuperacao, args=(user.email, code))
+        thread_email.start()
 
-    # Sempre retorna sucesso para evitar que descubram quais e-mails existem no banco
+    # Retorna imediatamente para o front-end, sem congelar a tela de loading do usuário
     return jsonify({'success': True, 'msg': 'Código enviado!'})
 
 
