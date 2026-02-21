@@ -310,14 +310,24 @@ def withdraw_request(current_user):
     if amount <= 0 or current_user.balance < amount:
         return jsonify({'success': False, 'msg': 'Saldo insuficiente ou valor inválido.'})
 
+    # --- LÓGICA DA TAXA DE SAQUE DE 5% ---
+    taxa_retida = amount * 0.05
+    valor_liquido = amount - taxa_retida
+
+    # Desconta o valor total da banca do usuário
     current_user.balance -= amount
+
+    # Mas registra apenas o valor líquido para você pagar no PIX
     db.session.add(
-        Transaction(user_id=current_user.id, type='withdraw', amount=amount, pix_key=request.json.get('pix_key'),
+        Transaction(user_id=current_user.id, type='withdraw', amount=valor_liquido, pix_key=request.json.get('pix_key'),
                     status='pending'))
     db.session.commit()
-    return jsonify({'success': True, 'msg': 'Saque solicitado!', 'new_balance': current_user.balance})
 
-
+    return jsonify({
+        'success': True,
+        'msg': f'Saque solicitado! Valor líquido: R$ {valor_liquido:.2f} (-5% de taxa).',
+        'new_balance': current_user.balance
+    })
 # ==========================================
 # ROTAS GENÉRICAS DE JOGOS (MINES, AVIATOR, INDEX)
 # ==========================================
@@ -503,3 +513,4 @@ def admin_user_delete(current_user):
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
