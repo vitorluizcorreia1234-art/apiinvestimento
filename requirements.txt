@@ -6,3 +6,4 @@ mercadopago
 pyjwt
 werkzeug
 gunicorn
+requests==2.31.0
