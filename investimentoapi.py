@@ -5,7 +5,7 @@ import string
 import smtplib
 import requests
 import threading
-import jwt
+import jwt  # <-- IMPORTANTE: Faltava isso para o login funcionar!
 from decimal import Decimal
 from email.message import EmailMessage
 from functools import wraps
@@ -60,7 +60,7 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     balance = db.Column(db.Float, default=0.0)
     role = db.Column(db.String(20), default='user')
-    vip = db.Column(db.String(50), default='iniciante')  # Dinâmico agora
+    vip = db.Column(db.String(50), default='iniciante')
     reset_code = db.Column(db.String(6), nullable=True)
     reset_code_exp = db.Column(db.DateTime, nullable=True)
     status = db.Column(db.String(20), default='active')
@@ -116,6 +116,13 @@ def setup_database():
                 }
                 db.session.add(SystemConfig(key='vip_settings', value=json.dumps(default_vips)))
 
+            # Cria a configuração padrão de Planos se não existir
+            if not SystemConfig.query.filter_by(key='plans_settings').first():
+                default_plans = [
+                    {"id": 1, "name": "Nexus Basic", "type": "mensal", "yieldTotal": 30, "min": 100, "days": 30, "desc": "Plano Base do Sistema"}
+                ]
+                db.session.add(SystemConfig(key='plans_settings', value=json.dumps(default_plans)))
+
             if not User.query.filter_by(username='admin').first():
                 hashed = generate_password_hash('Ravizinho@4000', method='pbkdf2:sha256')
                 admin = User(username='admin', email='admin@nexus.com', cpf='00000000000', phone='000',
@@ -127,9 +134,7 @@ def setup_database():
         except Exception as e:
             print(f">>> ERRO DB: {e} <<<")
 
-
 setup_database()
-
 
 def get_vip_config():
     config = SystemConfig.query.get('vip_settings')
@@ -143,8 +148,8 @@ def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         token = request.headers.get('Authorization')
-        if not token or not token.startswith("Bearer "): return jsonify(
-            {'success': False, 'msg': 'Sessão inválida'}), 401
+        if not token or not token.startswith("Bearer "): 
+            return jsonify({'success': False, 'msg': 'Sessão inválida'}), 401
         try:
             data = jwt.decode(token.split(" ")[1], app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = User.query.get(data['user_id'])
@@ -162,8 +167,8 @@ def admin_required(f):
     @wraps(f)
     @token_required
     def decorated(current_user, *args, **kwargs):
-        if current_user.role != 'admin' and current_user.vip != 'adm': return jsonify(
-            {'success': False, 'msg': 'Acesso negado.'}), 403
+        if current_user.role != 'admin' and current_user.vip != 'adm': 
+            return jsonify({'success': False, 'msg': 'Acesso negado.'}), 403
         return f(current_user, *args, **kwargs)
 
     return decorated
@@ -179,13 +184,12 @@ def get_me(current_user):
                     'user': {'id': current_user.id, 'username': current_user.username, 'balance': current_user.balance,
                              'role': current_user.role, 'vip': current_user.vip, 'email': current_user.email}})
 
-
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     data = request.json
     if User.query.filter(
-            (User.username == data['username']) | (User.email == data['email']) | (User.cpf == data['cpf'])).first():
-        return jsonify({'success': False, 'msg': 'Usuário já existe.'})
+            (User.username == data.get('username')) | (User.email == data.get('email')) | (User.cpf == data.get('cpf'))).first():
+        return jsonify({'success': False, 'msg': 'Usuário, Email ou CPF já cadastrado.'})
     new_user = User(username=data['username'], email=data['email'], cpf=data['cpf'], phone=data['phone'],
                     password_hash=generate_password_hash(data['password'], method='pbkdf2:sha256'), role='user',
                     vip='iniciante')
@@ -198,8 +202,8 @@ def register():
 def login():
     data = request.json
     user = User.query.filter(
-        (User.username == data['login']) | (User.email == data['login']) | (User.cpf == data['login'])).first()
-    if user and check_password_hash(user.password_hash, data['password']):
+        (User.username == data.get('login')) | (User.email == data.get('login')) | (User.cpf == data.get('login'))).first()
+    if user and check_password_hash(user.password_hash, data.get('password')):
         if user.status == 'banned': return jsonify({'success': False, 'msg': f'Banido: {user.ban_reason}'}), 403
         token = jwt.encode({'user_id': user.id, 'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)},
                            app.config['SECRET_KEY'], algorithm="HS256")
@@ -207,6 +211,25 @@ def login():
                         'user': {'id': user.id, 'username': user.username, 'balance': user.balance, 'role': user.role,
                                  'vip': user.vip}})
     return jsonify({'success': False, 'msg': 'Credenciais incorretas.'})
+
+
+# ==========================================
+# ROTA DE EXTRATO (NOVA)
+# ==========================================
+@app.route('/api/user/transactions', methods=['GET'])
+@token_required
+def get_user_transactions(current_user):
+    transactions = Transaction.query.filter_by(user_id=current_user.id).order_by(Transaction.created_at.desc()).limit(50).all()
+    tx_data = []
+    for tx in transactions:
+        tx_data.append({
+            'id': tx.id,
+            'type': tx.type,
+            'amount': tx.amount,
+            'status': tx.status,
+            'date': tx.created_at.strftime("%d/%m/%Y %H:%M")
+        })
+    return jsonify({'success': True, 'transactions': tx_data})
 
 
 # ==========================================
@@ -248,16 +271,13 @@ def mp_webhook():
                     user.balance += trans.amount
                     db.session.commit()
 
-                    # LÓGICA DE SUBIDA DE VIP AUTOMÁTICA
                     total_deposits = db.session.query(db.func.sum(Transaction.amount)).filter_by(user_id=user.id,
                                                                                                  type='deposit',
                                                                                                  status='approved').scalar() or 0
                     vip_rules = get_vip_config()
-
-                    # Ordena os VIPs do maior requisito para o menor
                     sorted_vips = sorted(vip_rules.items(), key=lambda x: x[1].get('min_deposit', 0), reverse=True)
 
-                    if user.vip not in ['adm', 'streamer']:  # Não rebaixa admins/influencers
+                    if user.vip not in ['adm', 'streamer']:
                         for vip_key, vip_data in sorted_vips:
                             if total_deposits >= vip_data.get('min_deposit', 0):
                                 user.vip = vip_key
@@ -278,10 +298,8 @@ def withdraw_request(current_user):
     if amount <= 0 or current_user.balance < amount:
         return jsonify({'success': False, 'msg': 'Saldo insuficiente.'})
 
-    # Puxa as regras ao vivo do banco
     vip_rules = get_vip_config()
 
-    # Se o usuário for ADM ou Streamer, ele não tem limites. Se não, puxa a regra dele ou cai pro "iniciante"
     if current_user.vip in ['adm', 'streamer']:
         taxa_percentual = 0.0
         max_limit = 9999999
@@ -290,30 +308,24 @@ def withdraw_request(current_user):
         taxa_percentual = user_rule.get('tax_percent', 0.05)
         max_limit = user_rule.get('max_withdraw', 1000)
 
-    # --- NOVA LÓGICA DE LIMITE DIÁRIO BLINDADO ---
-    # Pega o começo do dia de hoje (00:00)
     hoje = datetime.datetime.utcnow().date()
     inicio_do_dia = datetime.datetime.combine(hoje, datetime.time.min)
 
-    # Soma todos os saques (pendentes ou aprovados) que o usuário já pediu hoje
     saques_hoje = db.session.query(db.func.sum(Transaction.amount)).filter(
         Transaction.user_id == current_user.id,
         Transaction.type == 'withdraw',
-        Transaction.status != 'rejected',  # Ignora se o admin recusou o saque
+        Transaction.status != 'rejected',
         Transaction.created_at >= inicio_do_dia
     ).scalar() or 0
 
-    # Bloqueia se a tentativa atual + o que ele já sacou hoje passar do limite
     if (saques_hoje + amount) > max_limit:
         limite_restante = max_limit - saques_hoje
-        limite_restante = max(0, limite_restante)  # Evita número negativo
+        limite_restante = max(0, limite_restante)
         return jsonify({
             'success': False,
             'msg': f'Limite diário excedido! O máximo por dia para o nível {current_user.vip.upper()} é R$ {max_limit}. Você ainda pode sacar R$ {limite_restante:.2f} hoje.'
         })
-    # ---------------------------------------------
 
-    # Se passou da trava diária, calcula a taxa e finaliza o pedido
     valor_liquido = amount - (amount * taxa_percentual)
     current_user.balance -= amount
 
@@ -357,7 +369,21 @@ def get_active_investments(current_user):
 
 
 # ==========================================
-# PAINEL ADMIN E GERENCIAMENTO DE VIP
+# ROTAS PÚBLICAS (VIP E PLANOS)
+# ==========================================
+@app.route('/api/config/vip/public', methods=['GET'])
+def get_public_vip():
+    config = SystemConfig.query.get('vip_settings')
+    return jsonify({'success': True, 'vip_config': json.loads(config.value) if config else {}})
+
+@app.route('/api/config/plans/public', methods=['GET'])
+def get_public_plans():
+    config = SystemConfig.query.get('plans_settings')
+    return jsonify({'success': True, 'plans': json.loads(config.value) if config else []})
+
+
+# ==========================================
+# PAINEL ADMIN
 # ==========================================
 @app.route('/api/admin/dashboard', methods=['GET'])
 @admin_required
@@ -415,7 +441,6 @@ def admin_user_delete(current_user):
     return jsonify({'success': True})
 
 
-# --- ROTA NOVA: LER E EDITAR AS REGRAS VIP DO PAINEL ---
 @app.route('/api/admin/config/vip', methods=['GET', 'POST'])
 @admin_required
 def manage_vip_config(current_user):
@@ -432,6 +457,21 @@ def manage_vip_config(current_user):
         return jsonify({'success': True, 'msg': 'Configurações VIP atualizadas!'})
 
 
+@app.route('/api/admin/config/plans', methods=['GET', 'POST'])
+@admin_required
+def manage_plans_config(current_user):
+    config = SystemConfig.query.get('plans_settings')
+    if request.method == 'GET':
+        return jsonify({'success': True, 'plans': json.loads(config.value) if config else []})
+
+    if request.method == 'POST':
+        if config:
+            config.value = json.dumps(request.json)
+        else:
+            db.session.add(SystemConfig(key='plans_settings', value=json.dumps(request.json)))
+        db.session.commit()
+        return jsonify({'success': True, 'msg': 'Planos atualizados!'})
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), debug=False)
-
