@@ -1,9 +1,8 @@
-flask
-flask_cors
-flask_sqlalchemy
-psycopg2-binary
-mercadopago
-pyjwt
-werkzeug
-gunicorn
+Flask==3.0.0
+Flask-Cors==4.0.0
+Flask-SQLAlchemy==3.1.1
+PyJWT==2.8.0
+mercadopago==3.2.0
 requests==2.31.0
+psycopg2-binary==2.9.9
+gunicorn==21.2.0
