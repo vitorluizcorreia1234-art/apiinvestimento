@@ -543,14 +543,37 @@ def admin_user_delete(current_user):
 @token_required
 def buy_investment(current_user):
     data = request.json
+    plan_id = data.get('plan_id')
     amount = float(data.get('amount', 0))
-    if amount <= 0 or current_user.balance < amount:
+
+    # BUSCAR DADOS REAIS DO PLANO NO BANCO (Proteção contra hackers)
+    plan = InvestmentPlan.query.get(plan_id)
+    if not plan:
+        return jsonify({'success': False, 'msg': 'Plano inválido ou não encontrado.'})
+
+    # Verifica se o valor enviado respeita o mínimo do plano oficial
+    if amount < plan.min_amount:
+        return jsonify({'success': False, 'msg': f'O valor mínimo para este plano é R$ {plan.min_amount:.2f}'})
+
+    # Verifica se tem saldo
+    if current_user.balance < amount:
         return jsonify({'success': False, 'msg': 'Saldo insuficiente.'})
+
+    # Desconta o saldo
     current_user.balance -= amount
-    db.session.add(
-        Investment(user_id=current_user.id, plan_id=data.get('plan_id'), name=data.get('name'), amount=amount,
-                   yield_total=float(data.get('yieldTotal', 0)), days=int(data.get('days', 0))))
+    
+    # Salva usando os dados do banco (plan.yield_total e plan.days) ignorando o que o frontend enviou
+    novo_investimento = Investment(
+        user_id=current_user.id, 
+        plan_id=plan.id, 
+        name=plan.name, 
+        amount=amount,
+        yield_total=plan.yield_total, 
+        days=plan.days
+    )
+    db.session.add(novo_investimento)
     db.session.commit()
+    
     return jsonify({'success': True, 'msg': 'Plano ativado com sucesso!', 'new_balance': current_user.balance})
 
 
