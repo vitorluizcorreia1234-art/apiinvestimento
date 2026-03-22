@@ -1,4 +1,6 @@
 import os
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import datetime
 import random
 import string
@@ -19,6 +21,12 @@ import mercadopago
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["200 per day", "50 per hour"]
+)
+
 db_url = os.environ.get("DATABASE_URL", "sqlite:///nexus_v3.db")
 if db_url and db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
@@ -27,7 +35,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {"pool_pre_ping": True}
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-SECRET_KEY = os.environ.get("SECRET_KEY", "chave_super_secreta_ninja_nexus_2026")
+SECRET_KEY = os.environ.get("SECRET_KEY")
 app.config['SECRET_KEY'] = SECRET_KEY
 
 db = SQLAlchemy(app)
@@ -232,6 +240,7 @@ def get_me(current_user):
 
 
 @app.route('/api/auth/register', methods=['POST'])
+@limiter.limit("3 per minute")
 def register():
     data = request.json
     if User.query.filter(
@@ -255,6 +264,7 @@ def register():
 
 
 @app.route('/api/auth/login', methods=['POST'])
+@limiter.limit("5 per minute")
 def login():
     data = request.json
     user = User.query.filter(
@@ -350,10 +360,29 @@ def mp_webhook():
 # ==========================================
 @app.route('/api/withdraw/request', methods=['POST'])
 @token_required
+@limiter.limit("2 per minute")
 def withdraw_request(current_user):
-    amount = float(request.json.get('amount', 0))
+    data = request.json
+    amount = float(data.get('amount', 0))
+    full_name = data.get('full_name', '').strip()
+    cpf_informado = data.get('cpf', '').strip()
+    pix_key = data.get('pix_key', '').strip()
+
     if amount <= 0 or current_user.balance < amount:
         return jsonify({'success': False, 'msg': 'Saldo insuficiente.'})
+
+    # ==========================================
+    # SISTEMA ANTIFRAUDE (Nome, CPF e Chave PIX)
+    # ==========================================
+    if cpf_informado != current_user.cpf:
+        return jsonify({'success': False, 'msg': 'Operação bloqueada: O CPF informado não confere com o CPF do seu cadastro!'})
+
+    if pix_key != current_user.cpf:
+        return jsonify({'success': False, 'msg': 'Segurança: A chave PIX de destino DEVE ser obrigatoriamente o seu CPF cadastrado!'})
+
+    if len(full_name) < 5:
+        return jsonify({'success': False, 'msg': 'Informe seu nome completo verdadeiro para prosseguir.'})
+    # ==========================================
 
     vip_rules = get_vip_config()
 
@@ -392,20 +421,20 @@ def withdraw_request(current_user):
     if (saques_hoje + amount) > max_limit:
         limite_restante = max(0, max_limit - saques_hoje)
         return jsonify({'success': False,
-                        'msg': f'Limite diário excedido! Máximo para {current_user.vip.upper()} é R$ {max_limit}. Restante hoje: R$ {limite_restante:.2f}'})
+                        'msg': f'Limite diário excedido! Restante hoje: R$ {limite_restante:.2f}'})
 
     # FINALIZAÇÃO
     valor_liquido = amount - (amount * taxa_percentual)
     current_user.balance -= amount
 
+    # Vamos guardar o Nome Completo na coluna external_id para mostrar no Admin
     db.session.add(
-        Transaction(user_id=current_user.id, type='withdraw', amount=valor_liquido, pix_key=request.json.get('pix_key'),
-                    status='pending'))
+        Transaction(user_id=current_user.id, type='withdraw', amount=valor_liquido, pix_key=pix_key,
+                    external_id=full_name, status='pending'))
     db.session.commit()
 
     return jsonify({'success': True, 'msg': f'Saque solicitado! Líquido: R$ {valor_liquido:.2f}',
                     'new_balance': current_user.balance})
-
 
 # ==========================================
 # PAINEL ADMIN: DASHBOARD E GESTÃO
@@ -425,8 +454,14 @@ def admin_dashboard(current_user):
     wd_data = []
     for w in Transaction.query.filter_by(type='withdraw', status='pending').all():
         u_obj = User.query.get(w.user_id)
-        wd_data.append(
-            {"id": w.id, "user": u_obj.username if u_obj else 'Deletado', "amount": w.amount, "pix": w.pix_key})
+        wd_data.append({
+            "id": w.id, 
+            "user": u_obj.username if u_obj else 'Deletado', 
+            "cpf": u_obj.cpf if u_obj else 'N/A',
+            "full_name": w.external_id or 'Não Informado',
+            "amount": w.amount, 
+            "pix": w.pix_key
+        })
 
     # Puxa configuração geral para o dash
     ref_reward = SystemConfig.query.get('referral_reward')
