@@ -297,7 +297,6 @@ def generate_pix(current_user):
         pass
     return jsonify({'success': False, 'msg': 'Erro ao comunicar com o Banco.'})
 
-
 @app.route('/api/webhook/mercadopago', methods=['POST'])
 def mp_webhook():
     if request.args.get("type") == "payment":
@@ -311,18 +310,22 @@ def mp_webhook():
                     user = User.query.get(trans.user_id)
                     user.balance += trans.amount
 
-                    # LÓGICA DE BÔNUS DE INDICAÇÃO NO PRIMEIRO DEPÓSITO
+                    # LÓGICA DE BÔNUS DE INDICAÇÃO COM VALOR MÍNIMO
                     if not user.has_deposited:
-                        user.has_deposited = True
-                        if user.referred_by:
-                            referrer = User.query.get(user.referred_by)
-                            if referrer:
-                                ref_reward = SystemConfig.query.get('referral_reward')
-                                reward_amount = float(ref_reward.value) if ref_reward else 50.0
-                                referrer.balance += reward_amount
-                                # Cria registro de transação para o padrinho ver no extrato
-                                db.session.add(Transaction(user_id=referrer.id, type='deposit', amount=reward_amount,
-                                                           external_id='bonus_indicacao', status='approved'))
+                        # Busca o valor mínimo exigido no banco de dados (padrão 20.0)
+                        ref_min_dep = SystemConfig.query.get('referral_min_deposit')
+                        min_req = float(ref_min_dep.value) if ref_min_dep else 20.0
+                        
+                        if trans.amount >= min_req: # Somente libera se o deposito bater a meta
+                            user.has_deposited = True
+                            if user.referred_by:
+                                referrer = User.query.get(user.referred_by)
+                                if referrer:
+                                    ref_reward = SystemConfig.query.get('referral_reward')
+                                    reward_amount = float(ref_reward.value) if ref_reward else 50.0
+                                    referrer.balance += reward_amount
+                                    db.session.add(Transaction(user_id=referrer.id, type='deposit', amount=reward_amount,
+                                                               external_id='bonus_indicacao', status='approved'))
 
                     # LÓGICA DE SUBIDA DE VIP AUTOMÁTICA
                     total_deposits = db.session.query(db.func.sum(Transaction.amount)).filter_by(user_id=user.id,
@@ -427,13 +430,15 @@ def admin_dashboard(current_user):
 
     # Puxa configuração geral para o dash
     ref_reward = SystemConfig.query.get('referral_reward')
+    ref_min = SystemConfig.query.get('referral_min_deposit')
 
     return jsonify({
         'success': True,
         'users': users_data,
         'withdrawals': wd_data,
         'config': {
-            'referral_reward': float(ref_reward.value) if ref_reward else 50.0
+            'referral_reward': float(ref_reward.value) if ref_reward else 50.0,
+            'referral_min_deposit': float(ref_min.value) if ref_min else 20.0
         }
     })
 
@@ -451,6 +456,14 @@ def admin_config_general(current_user):
             cfg = SystemConfig(key='referral_reward')
             db.session.add(cfg)
         cfg.value = str(data['referral_reward'])
+        
+    if 'referral_min_deposit' in data:
+        cfg_min = SystemConfig.query.get('referral_min_deposit')
+        if not cfg_min:
+            cfg_min = SystemConfig(key='referral_min_deposit')
+            db.session.add(cfg_min)
+        cfg_min.value = str(data['referral_min_deposit'])
+        
     db.session.commit()
     return jsonify({'success': True, 'msg': 'Configurações salvas!'})
 
@@ -498,7 +511,10 @@ def admin_withdraw_action(current_user):
     data = request.json
     trans = Transaction.query.get(data.get('id'))
     if trans and trans.status == 'pending':
-        trans.status = data.get('action')
+        # Converte a ação do admin para o termo que o painel do usuário entende
+        acao_admin = data.get('action')
+        trans.status = 'approved' if acao_admin == 'approve' else 'rejected'
+        
         if trans.status == 'rejected':
             user = User.query.get(trans.user_id)
             if user: user.balance += trans.amount
